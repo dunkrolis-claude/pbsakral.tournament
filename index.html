@@ -264,6 +264,32 @@
   .sched-cell.empty{color:var(--ink-faint);}
   .sched-cell.filled{background:rgba(212,175,55,0.10);color:var(--gold-bright);}
   .sched-cell:hover{background:rgba(212,175,55,0.18);}
+
+  /* ===== Responsive: tablet & desktop (kept last so it always wins) ===== */
+  @media (min-width:700px){
+    :root{ --maxw:760px; }
+    .section{padding-left:26px;padding-right:26px;}
+    .hero{padding-left:26px;padding-right:26px;}
+  }
+  @media (min-width:900px){
+    :root{ --maxw:1080px; }
+    .topbar{padding:14px 30px;}
+    .hero{padding-top:52px;padding-bottom:40px;padding-left:30px;padding-right:30px;}
+    .section{padding:30px 30px;}
+    .cats{grid-template-columns:repeat(4,1fr);padding-left:30px;padding-right:30px;}
+    .radio-cats{grid-template-columns:repeat(4,1fr);}
+    .stat-grid{grid-template-columns:repeat(auto-fit,minmax(200px,1fr));}
+    .photo-pair{max-width:460px;margin-left:auto;margin-right:auto;}
+    .card{padding:22px;}
+    .pin-wrap{margin-top:80px;}
+    .sched-table{min-width:100%;}
+  }
+  @media (min-width:1280px){
+    :root{ --maxw:1240px; }
+    .section{padding:34px 40px;}
+    .hero{padding-left:40px;padding-right:40px;}
+    .cats{padding-left:40px;padding-right:40px;}
+  }
 </style>
 </head>
 <body>
@@ -307,7 +333,7 @@ const DEPOSIT_FEE = 50000;
 const CATEGORY_RULES_VERSION = "v2";
 
 const GENERAL_RULES = [
-  "Peserta wajib mengirimkan nama lengkap, foto terbaru, dan video bermain sekitar 2 menit sebagai bahan verifikasi panitia.",
+  "Peserta wajib mengirimkan nama lengkap dan foto terbaru sebagai bahan verifikasi panitia. Video permainan (\u00b12 menit) tidak wajib di awal \u2014 panitia dapat memintanya menyusul apabila diperlukan validasi tambahan.",
   "Data pemain yang didaftarkan harus sesuai dengan pemain yang hadir dan bertanding.",
   "Panitia berhak melakukan validasi ulang di lokasi pertandingan.",
   "Apabila kemampuan/level pemain saat bertanding dinilai tidak sesuai kategori, panitia berhak mendiskualifikasi peserta.",
@@ -922,7 +948,8 @@ function photoField(label, key){
 }
 function videoField(){
   const f = el("div",{class:"field"});
-  f.appendChild(el("label",{},"Video Verifikasi (\u00b12 menit)"));
+  f.appendChild(el("label",{},"Video Verifikasi (\u00b12 menit) \u2014 Opsional"));
+  f.appendChild(el("div",{class:"hint", style:"margin-top:-4px;margin-bottom:8px;"},"Tidak wajib diisi sekarang. Panitia bisa memintanya menyusul jika diperlukan untuk validasi kategori."));
   const seg = el("div",{class:"seg"});
   const btnLink = el("button",{class: regFormState.videoType==="link"?"active":"", type:"button", onclick:()=>{ regFormState.videoType="link"; render(); }},"Link Video");
   const btnFile = el("button",{class: regFormState.videoType==="file"?"active":"", type:"button", onclick:()=>{ regFormState.videoType="file"; render(); }},"Upload File");
@@ -964,8 +991,7 @@ async function submitRegistration(){
   if(!s.club) missing.push("Nama PB/Klub");
   if(!s.whatsapp) missing.push("Nomor WhatsApp");
   if(!s.domicile) missing.push("Domisili");
-  if(s.videoType==="link" && !s.videoLink) missing.push("Link Video Verifikasi");
-  if(s.videoType==="file" && !s.videoFileData) missing.push("File Video Verifikasi");
+  // Video verifikasi tidak wajib saat daftar; panitia bisa meminta menyusul jika diperlukan.
   if(!s.rulesAccepted) missing.push("Persetujuan Pernyataan Data & Level Pemain");
   if(missing.length){
     errEl.appendChild(el("div",{class:"flag"},"Lengkapi dulu: " + missing.join(", ")));
@@ -1140,8 +1166,9 @@ function revisionCard(reg){
   let localState = {
     player1: reg.player1, player2: reg.player2, club: reg.club, whatsapp: reg.whatsapp, domicile: reg.domicile,
     player1Photo: reg.player1PhotoUrl, player2Photo: reg.player2PhotoUrl,
-    videoType: reg.verificationVideo.type, videoLink: reg.verificationVideo.type==="link"?reg.verificationVideo.value:"",
-    videoFileData: reg.verificationVideo.type==="file"?reg.verificationVideo.value:""
+    videoType: (reg.verificationVideo && reg.verificationVideo.type) || "link",
+    videoLink: (reg.verificationVideo && reg.verificationVideo.type==="link") ? reg.verificationVideo.value : "",
+    videoFileData: (reg.verificationVideo && reg.verificationVideo.type==="file") ? reg.verificationVideo.value : ""
   };
 
   function fieldRow(label, key, isPhoto){
@@ -1172,12 +1199,38 @@ function revisionCard(reg){
   c.appendChild(fieldRow("WhatsApp","whatsapp"));
   c.appendChild(fieldRow("Domisili","domicile"));
 
+  const vf = el("div",{class:"field"});
+  vf.appendChild(el("label",{},"Video Verifikasi (\u00b12 menit)"));
+  const seg = el("div",{class:"seg"});
+  seg.appendChild(el("button",{class: localState.videoType==="link"?"active":"", type:"button", onclick:()=>{ localState.videoType="link"; render(); }},"Link Video"));
+  seg.appendChild(el("button",{class: localState.videoType==="file"?"active":"", type:"button", onclick:()=>{ localState.videoType="file"; render(); }},"Upload File"));
+  vf.appendChild(seg);
+  if(localState.videoType==="link"){
+    const vin = el("input",{type:"text", placeholder:"Link Google Drive / YouTube / dll", value: localState.videoLink||""});
+    vin.addEventListener("input",(e)=>{ localState.videoLink = e.target.value; });
+    vf.appendChild(vin);
+  } else {
+    const drop = el("div",{class:"file-drop"}, localState.videoFileData? "Video terpilih \u2713 (tap untuk ganti)" : "Tap untuk pilih file video (maks 500KB)");
+    const vin = el("input",{type:"file", accept:"video/*", style:"display:none;"});
+    vin.addEventListener("change",(e)=>{
+      const file = e.target.files[0]; if(!file) return;
+      if(file.size > 500*1024){ showToast("File video maksimal 500KB. Gunakan link jika lebih besar."); return; }
+      const reader = new FileReader();
+      reader.onload = ()=>{ localState.videoFileData = reader.result; render(); };
+      reader.readAsDataURL(file);
+    });
+    drop.addEventListener("click",()=>vin.click());
+    vf.appendChild(drop); vf.appendChild(vin);
+  }
+  c.appendChild(vf);
+
   c.appendChild(el("button",{class:"btn btn-gold btn-block", style:"margin-top:8px;", onclick: async ()=>{
     reg.player1 = localState.player1; reg.player2 = localState.player2;
     reg.club = localState.club; reg.whatsapp = localState.whatsapp;
     reg.whatsappNumberNormalized = normalizeWhatsapp(localState.whatsapp);
     reg.domicile = localState.domicile;
     reg.player1PhotoUrl = localState.player1Photo; reg.player2PhotoUrl = localState.player2Photo;
+    reg.verificationVideo = { type: localState.videoType, value: localState.videoType==="link" ? (localState.videoLink||"").trim() : (localState.videoFileData||"") };
     reg.status = "WAITING_VALIDATION";
     const ok = await persistReg(reg);
     if(ok){ showToast("Data diperbarui, menunggu validasi ulang panitia."); render(); }
@@ -1428,6 +1481,7 @@ function renderListResults(){
 let confirmModal = null;
 let categoryMoveModal = false;
 let revisionRequestModal = false;
+let revisionPrefill = "";
 let manualWaModal = false;
 
 function viewAdminDetail(params){
@@ -1467,14 +1521,17 @@ function viewAdminDetail(params){
   infoCard.appendChild(el("div",{class:"kv"},[el("span",{class:"k"},"WhatsApp"),el("span",{class:"v"},reg.whatsapp+" ("+reg.whatsappNumberNormalized+")")]));
   infoCard.appendChild(el("div",{class:"kv"},[el("span",{class:"k"},"Domisili"),el("span",{class:"v"},reg.domicile)]));
   if(reg.note) infoCard.appendChild(el("div",{class:"kv"},[el("span",{class:"k"},"Catatan Peserta"),el("span",{class:"v"},reg.note)]));
+  const hasVideo = !!(reg.verificationVideo && reg.verificationVideo.value);
   infoCard.appendChild(el("div",{class:"kv"},[el("span",{class:"k"},"Video Verifikasi"),
-    el("span",{class:"v"}, reg.verificationVideo.type==="link"
-      ? el("a",{href:reg.verificationVideo.value, target:"_blank", style:"color:var(--gold-bright);"},"Buka Link")
-      : "File terlampir")]));
+    el("span",{class:"v", style: hasVideo?"":"color:var(--ink-faint);font-weight:600;"},
+      !hasVideo ? "Belum dikirim"
+      : reg.verificationVideo.type==="link"
+        ? el("a",{href:reg.verificationVideo.value, target:"_blank", style:"color:var(--gold-bright);"},"Buka Link")
+        : "File terlampir")]));
   infoCard.appendChild(el("div",{class:"kv"},[el("span",{class:"k"},"Didaftarkan"),el("span",{class:"v"},fmtDate(reg.createdAt))]));
   sec.appendChild(infoCard);
 
-  if(reg.verificationVideo.type==="file" && reg.verificationVideo.value){
+  if(reg.verificationVideo && reg.verificationVideo.type==="file" && reg.verificationVideo.value){
     const vc = el("div",{class:"card"});
     vc.appendChild(el("video",{src:reg.verificationVideo.value, controls:"true", style:"width:100%;border-radius:10px;"}));
     sec.appendChild(vc);
@@ -1561,7 +1618,10 @@ function viewAdminDetail(params){
       }
     })},"Tolak"));
     row.appendChild(el("button",{class:"btn btn-info btn-sm", style:"flex:1;min-width:100px;", onclick:()=>{ categoryMoveModal=true; render(); }},"Pindahkan Kategori"));
-    row.appendChild(el("button",{class:"btn btn-outline btn-sm", style:"flex:1;min-width:100px;", onclick:()=>{ revisionRequestModal=true; render(); }},"Minta Data Tambahan"));
+    row.appendChild(el("button",{class:"btn btn-outline btn-sm", style:"flex:1;min-width:100px;", onclick:()=>{ revisionRequestModal=true; revisionPrefill=""; render(); }},"Minta Data Tambahan"));
+    if(!(reg.verificationVideo && reg.verificationVideo.value)){
+      row.appendChild(el("button",{class:"btn btn-outline btn-sm", style:"flex:1;min-width:100px;", onclick:()=>{ revisionRequestModal=true; revisionPrefill="Mohon kirim video verifikasi bermain (\u00b12 menit) sesuai kategori "+cat.name+" untuk validasi panitia."; render(); }},"Minta Video"));
+    }
     actions.appendChild(row);
   } else if(reg.status==="WAITING_CATEGORY_CONFIRMATION"){
     actions.appendChild(el("div",{class:"flag info"},"Menunggu peserta mengonfirmasi kategori baru: " + catByCode(reg.pendingCategory).name));
@@ -1569,7 +1629,12 @@ function viewAdminDetail(params){
     actions.appendChild(el("div",{class:"flag warn"},"Menunggu peserta melengkapi data. Catatan: " + (reg.adminNote||"-")));
   } else if(reg.status==="WAITING_PAYMENT"){
     actions.appendChild(el("div",{class:"flag info"},"Menunggu peserta mengunggah bukti pembayaran."));
-    actions.appendChild(el("button",{class:"btn btn-outline btn-sm", style:"margin-top:8px;", onclick:()=>{ revisionRequestModal=true; render(); }},"Minta Data Tambahan"));
+    const row2 = el("div",{style:"display:flex;gap:8px;flex-wrap:wrap;margin-top:8px;"});
+    row2.appendChild(el("button",{class:"btn btn-outline btn-sm", onclick:()=>{ revisionRequestModal=true; revisionPrefill=""; render(); }},"Minta Data Tambahan"));
+    if(!(reg.verificationVideo && reg.verificationVideo.value)){
+      row2.appendChild(el("button",{class:"btn btn-outline btn-sm", onclick:()=>{ revisionRequestModal=true; revisionPrefill="Mohon kirim video verifikasi bermain (\u00b12 menit) sesuai kategori "+cat.name+" untuk validasi panitia."; render(); }},"Minta Video"));
+    }
+    actions.appendChild(row2);
   } else if(reg.status==="WAITING_VERIFICATION"){
     const row = el("div",{style:"display:flex;gap:10px;"});
     row.appendChild(el("button",{class:"btn btn-ok", style:"flex:1;", onclick:()=>openConfirm({
@@ -1682,8 +1747,9 @@ function renderRevisionRequestModal(reg){
   const modal = el("div",{class:"modal"});
   modal.appendChild(el("h3",{},"Minta Data Tambahan"));
   modal.appendChild(el("p",{},"Jelaskan data apa yang perlu dilengkapi/diperbaiki peserta."));
-  let noteVal = "";
-  const ta = el("textarea",{placeholder:"Contoh: foto pemain 2 kurang jelas, mohon unggah ulang.", style:"width:100%;background:var(--bg-elev);border:1px solid var(--line);border-radius:9px;padding:10px;color:var(--ink);min-height:80px;margin-bottom:14px;"});
+  let noteVal = revisionPrefill || "";
+  const ta = el("textarea",{placeholder:"Contoh: foto pemain 2 kurang jelas, mohon unggah ulang."}, noteVal);
+  ta.style.cssText = "width:100%;background:var(--bg-elev);border:1px solid var(--line);border-radius:9px;padding:10px;color:var(--ink);min-height:80px;margin-bottom:14px;";
   ta.addEventListener("input",(e)=>{ noteVal = e.target.value; });
   modal.appendChild(ta);
   const actions = el("div",{class:"modal-actions"});
