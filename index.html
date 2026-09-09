@@ -280,6 +280,20 @@
   .fin-row .fr-sub{font-size:11px;color:var(--ink-faint);margin-top:2px;}
   .fin-row .fr-balance{font-family:'Anton';font-size:15px;color:var(--gold-bright);text-align:right;}
 
+  .bracket-scroll{overflow-x:auto;padding-bottom:14px;}
+  .bracket-tree{display:flex;align-items:stretch;gap:44px;padding:14px 14px 10px;position:relative;min-width:max-content;}
+  .bracket-col{display:flex;flex-direction:column;justify-content:space-around;min-width:184px;}
+  .bracket-col-title{text-align:center;font-size:10.5px;font-weight:800;color:var(--gold-bright);text-transform:uppercase;letter-spacing:0.06em;margin-bottom:8px;}
+  .bracket-box{background:var(--card);border:1px solid var(--line);border-radius:9px;padding:6px 9px;height:50px;display:flex;flex-direction:column;justify-content:center;position:relative;}
+  .bracket-box .bb-slot{font-size:11.5px;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;line-height:1.5;}
+  .bracket-box .bb-slot.winner{color:var(--gold-bright);}
+  .bracket-box .bb-mid{height:1px;background:var(--line);margin:1px 0;}
+  .bracket-box .bb-score{position:absolute;right:8px;top:2px;font-size:9px;color:var(--ink-faint);}
+  .bracket-svg{position:absolute;top:0;left:0;pointer-events:none;overflow:visible;}
+  .bracket-toggle{display:flex;gap:6px;margin-bottom:12px;}
+  .bracket-toggle button{background:transparent;border:1px solid var(--line);color:var(--ink-dim);padding:7px 13px;border-radius:9px;font-size:12px;font-weight:700;cursor:pointer;}
+  .bracket-toggle button.active{background:var(--card-2);border-color:var(--gold-dim);color:var(--gold-bright);}
+
   .ref-scoreboard{display:flex;gap:10px;padding:0 18px;margin-bottom:14px;}
   .ref-side{flex:1;background:var(--card);border:2px solid var(--line);border-radius:16px;padding:18px 10px;text-align:center;cursor:pointer;user-select:none;}
   .ref-side.serving{border-color:var(--gold);background:rgba(212,175,55,0.08);}
@@ -1508,32 +1522,7 @@ function renderPublicBagan(){
     sec.appendChild(el("div",{class:"empty"},"Bagan belum tersedia untuk kategori ini."));
     return sec;
   }
-  const roundNames = roundNamesFor(cat.quota);
-  roundNames.forEach(rn=>{
-    const block = el("div",{class:"round-block"});
-    block.appendChild(el("div",{class:"round-title"}, ROUND_LABELS[rn]));
-    const roundMatches = matches.filter(m=>m.round===rn).sort((a,b)=>a.matchNo-b.matchNo);
-    const anyKnown = roundMatches.some(m=> (m.sideA.type==="participant"&&m.sideA.participantId) || (m.sideB.type==="participant"&&m.sideB.participantId));
-    if(!anyKnown){
-      block.appendChild(el("div",{style:"font-size:12px;color:var(--ink-faint);"},"Menunggu hasil babak sebelumnya."));
-      sec.appendChild(block);
-      return;
-    }
-    roundMatches.forEach(m=>{
-      const row = el("div",{class:"match-row"});
-      const top = el("div",{class:"m-top"});
-      top.appendChild(el("span",{},"Match #"+m.matchNo));
-      if(m.status) top.appendChild(mcStatusBadge(m.status));
-      row.appendChild(top);
-      const isWinnerA = m.winnerParticipantId && m.sideA.type==="participant" && m.sideA.participantId===m.winnerParticipantId;
-      const isWinnerB = m.winnerParticipantId && m.sideB.type==="participant" && m.sideB.participantId===m.winnerParticipantId;
-      row.appendChild(el("div",{class:"m-side", style:isWinnerA?"color:var(--gold-bright);":""}, matchSideLabel(cat.code, m.sideA)));
-      row.appendChild(el("div",{class:"m-vs"}, (m.status==="FINISHED"||m.status==="WO") ? (m.scoreA!==null?m.scoreA+" - "+m.scoreB:"WO") : "vs"));
-      row.appendChild(el("div",{class:"m-side", style:isWinnerB?"color:var(--gold-bright);":""}, matchSideLabel(cat.code, m.sideB)));
-      block.appendChild(row);
-    });
-    sec.appendChild(block);
-  });
+  sec.appendChild(renderBracketTree(cat.code));
   return sec;
 }
 
@@ -2195,6 +2184,83 @@ function viewAdminDrawing(){
 /* ============ ADMIN: BRACKET (Phase 2) ============ */
 let bracketActiveCat = null;
 let moveMatchTarget = null; // {category, match}
+/* ============ BRACKET TREE (visual) ============ */
+let bracketViewMode = "tree"; // "tree" | "list"
+let pendingBracketDraw = null;
+
+function renderBracketTree(catCode){
+  const cat = catByCode(catCode);
+  const matches = MATCHES[catCode] || [];
+  const roundNames = roundNamesFor(cat.quota);
+  const scrollWrap = el("div",{class:"bracket-scroll"});
+  const treeId = "bracket-tree-"+catCode;
+  const svgId = "bracket-svg-"+catCode;
+  const tree = el("div",{class:"bracket-tree", id:treeId});
+  const svg = document.createElementNS("http://www.w3.org/2000/svg","svg");
+  svg.setAttribute("class","bracket-svg");
+  svg.setAttribute("id", svgId);
+  tree.appendChild(svg);
+
+  roundNames.forEach(rn=>{
+    const col = el("div",{class:"bracket-col"});
+    col.appendChild(el("div",{class:"bracket-col-title"}, ROUND_LABELS[rn]));
+    matches.filter(m=>m.round===rn).sort((a,b)=>a.matchNo-b.matchNo).forEach(m=>{
+      const isWinnerA = m.winnerParticipantId && m.sideA.type==="participant" && m.sideA.participantId===m.winnerParticipantId;
+      const isWinnerB = m.winnerParticipantId && m.sideB.type==="participant" && m.sideB.participantId===m.winnerParticipantId;
+      const box = el("div",{class:"bracket-box", id:"bb-"+m.id});
+      if(m.status==="FINISHED" || m.status==="WO"){
+        box.appendChild(el("div",{class:"bb-score"}, m.status==="WO" ? "WO" : (m.scoreA+"-"+m.scoreB)));
+      }
+      box.appendChild(el("div",{class:"bb-slot"+(isWinnerA?" winner":"")}, matchSideLabel(catCode, m.sideA)));
+      box.appendChild(el("div",{class:"bb-mid"}));
+      box.appendChild(el("div",{class:"bb-slot"+(isWinnerB?" winner":"")}, matchSideLabel(catCode, m.sideB)));
+      col.appendChild(box);
+    });
+    tree.appendChild(col);
+  });
+  scrollWrap.appendChild(tree);
+
+  pendingBracketDraw = ()=>drawBracketSvgLines(catCode, treeId, svgId);
+  return scrollWrap;
+}
+
+function svgLine(svg, x1,y1,x2,y2){
+  const line = document.createElementNS("http://www.w3.org/2000/svg","line");
+  line.setAttribute("x1",x1); line.setAttribute("y1",y1);
+  line.setAttribute("x2",x2); line.setAttribute("y2",y2);
+  line.setAttribute("stroke","rgba(212,175,55,0.4)");
+  line.setAttribute("stroke-width","1.5");
+  svg.appendChild(line);
+}
+function drawBracketSvgLines(catCode, treeId, svgId){
+  const treeEl = document.getElementById(treeId);
+  const svg = document.getElementById(svgId);
+  if(!treeEl || !svg) return;
+  svg.setAttribute("width", treeEl.scrollWidth);
+  svg.setAttribute("height", treeEl.scrollHeight);
+  while(svg.firstChild) svg.removeChild(svg.firstChild);
+  const matches = MATCHES[catCode] || [];
+  matches.forEach(m=>{
+    let s1 = m.sideA.type==="winnerOf" ? m.sideA.matchId : m.sideA.resolvedFrom;
+    let s2 = m.sideB.type==="winnerOf" ? m.sideB.matchId : m.sideB.resolvedFrom;
+    if(!s1 || !s2) return;
+    const curEl = document.getElementById("bb-"+m.id);
+    const s1El = document.getElementById("bb-"+s1);
+    const s2El = document.getElementById("bb-"+s2);
+    if(!curEl || !s1El || !s2El) return;
+    const s1y = s1El.offsetTop + s1El.offsetHeight/2;
+    const s2y = s2El.offsetTop + s2El.offsetHeight/2;
+    const sx = s1El.offsetLeft + s1El.offsetWidth;
+    const cx = curEl.offsetLeft;
+    const cy = curEl.offsetTop + curEl.offsetHeight/2;
+    const midX = (sx+cx)/2;
+    svgLine(svg, sx, s1y, midX, s1y);
+    svgLine(svg, sx, s2y, midX, s2y);
+    svgLine(svg, midX, s1y, midX, s2y);
+    svgLine(svg, midX, cy, cx, cy);
+  });
+}
+
 function viewAdminBracket(){
   if(!bracketActiveCat) bracketActiveCat = META.categories[0].code;
   const wrap = el("div",{});
@@ -2216,6 +2282,19 @@ function viewAdminBracket(){
     wrap.appendChild(sec);
     return wrap;
   }
+
+  const toggle = el("div",{class:"bracket-toggle"});
+  toggle.appendChild(el("button",{class: bracketViewMode==="tree"?"active":"", onclick:()=>{ bracketViewMode="tree"; render(); }},"\ud83c\udf33 Bagan (Tree)"));
+  toggle.appendChild(el("button",{class: bracketViewMode==="list"?"active":"", onclick:()=>{ bracketViewMode="list"; render(); }},"\ud83d\udccb Daftar"));
+  sec.appendChild(toggle);
+
+  if(bracketViewMode==="tree"){
+    sec.appendChild(el("div",{style:"font-size:11px;color:var(--ink-faint);margin-bottom:10px;"},"Geser ke samping untuk lihat babak selanjutnya. Tap \"Daftar\" untuk atur jadwal per match."));
+    sec.appendChild(renderBracketTree(cat.code));
+    wrap.appendChild(sec);
+    return wrap;
+  }
+
   const roundNames = roundNamesFor(cat.quota);
   roundNames.forEach(rn=>{
     const block = el("div",{class:"round-block"});
@@ -3183,7 +3262,6 @@ function render(){
     case "admin-matchcontrol": view = adminSession? viewAdminMatchControl() : viewAdminLogin(); break;
     case "admin-referee": view = adminSession? viewAdminReferee() : viewAdminLogin(); break;
     case "admin-finance": view = adminSession? viewAdminFinance() : viewAdminLogin(); break;
-    case "admin-referee": view = adminSession? viewAdminReferee() : viewAdminLogin(); break;
     case "admin-referee-setup": view = adminSession? viewAdminRefereeSetup(route.params) : viewAdminLogin(); break;
     case "admin-referee-scoring": view = adminSession? viewAdminRefereeScoring(route.params) : viewAdminLogin(); break;
     case "admin-settings": view = adminSession? viewAdminSettings() : viewAdminLogin(); break;
@@ -3192,6 +3270,11 @@ function render(){
   app.appendChild(view);
   const modal = renderConfirmModal();
   if(modal) app.appendChild(modal);
+  if(pendingBracketDraw){
+    const drawFn = pendingBracketDraw;
+    pendingBracketDraw = null;
+    (window.requestAnimationFrame || window.setTimeout)(drawFn, 0);
+  }
 }
 
 /* ============ INIT ============ */
