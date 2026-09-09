@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1">
-<title>PBSAKRAL.TOURNAMENT</title>
+<title>pbsakral.tournament</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Anton&family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
 <style>
@@ -244,6 +244,26 @@
   .switch.on{background:var(--gold-dim);}
   .switch .knob{position:absolute;top:2px;left:2px;width:20px;height:20px;background:var(--ink);border-radius:50%;transition:transform .15s ease;}
   .switch.on .knob{transform:translateX(18px);background:var(--gold-bright);}
+
+  .drawing-slot-row{display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid var(--line);}
+  .drawing-slot-row:last-child{border-bottom:none;}
+  .drawing-slot-no{width:30px;flex-shrink:0;font-family:'Anton';font-size:13px;color:var(--ink-faint);}
+  .drawing-slot-row select{flex:1;background:var(--bg-elev);border:1px solid var(--line);border-radius:8px;padding:8px;color:var(--ink);font-size:13px;}
+  .round-block{margin-bottom:16px;}
+  .round-title{font-size:12px;font-weight:800;color:var(--gold-bright);text-transform:uppercase;letter-spacing:0.06em;margin-bottom:8px;}
+  .match-row{background:var(--bg-elev);border:1px solid var(--line);border-radius:10px;padding:10px 12px;margin-bottom:8px;}
+  .match-row .m-top{display:flex;justify-content:space-between;align-items:center;font-size:10.5px;color:var(--ink-faint);margin-bottom:6px;}
+  .match-row .m-side{font-size:13px;font-weight:700;padding:3px 0;}
+  .match-row .m-vs{font-size:10px;color:var(--ink-faint);text-align:center;padding:1px 0;}
+  .sched-scroll{overflow-x:auto;}
+  .sched-table{border-collapse:collapse;width:100%;min-width:520px;}
+  .sched-table th{font-size:10.5px;color:var(--ink-faint);text-transform:uppercase;letter-spacing:0.04em;padding:6px 4px;border-bottom:1px solid var(--line);text-align:center;}
+  .sched-table td{border:1px solid var(--line);padding:0;text-align:center;vertical-align:middle;}
+  .sched-time{font-size:11px;color:var(--ink-faint);padding:6px 4px;white-space:nowrap;}
+  .sched-cell{min-width:88px;height:44px;font-size:10px;font-weight:700;cursor:pointer;padding:3px;line-height:1.25;}
+  .sched-cell.empty{color:var(--ink-faint);}
+  .sched-cell.filled{background:rgba(212,175,55,0.10);color:var(--gold-bright);}
+  .sched-cell:hover{background:rgba(212,175,55,0.18);}
 </style>
 </head>
 <body>
@@ -323,9 +343,28 @@ const CATEGORY_RULES = {
 const DECLARATION_TEXT = "Saya menyatakan bahwa data, identitas, dan level kemampuan pemain yang saya daftarkan sesuai dengan ketentuan kategori yang dipilih. Saya memahami bahwa panitia berhak melakukan validasi ulang dan mengambil keputusan apabila ditemukan ketidaksesuaian.";
 const WHATSAPP_CONSENT_TEXT = "Saya bersedia menerima informasi mengenai proses registrasi, pembayaran, jadwal, dan pertandingan PB Sakral Tournament melalui WhatsApp pada nomor yang saya daftarkan.";
 
+/* ============ PHASE 2: SCHEDULE CONFIG ============ */
+const TOURNAMENT_DAYS = [
+  {day:1, label:"Sabtu, 31 Okt 2026"},
+  {day:2, label:"Minggu, 1 Nov 2026"},
+];
+const SLOTS_PER_DAY = 24; // 09:00 to 21:00, 30-minute slots
+const COURTS = [1,2,3,4,5];
+const REST_MIN_GAP = 1; // minimum empty slots between a participant's matches
+function timeLabel(idx){
+  const totalMin = 9*60 + idx*30;
+  const h = Math.floor(totalMin/60), m = totalMin%60;
+  return String(h).padStart(2,"0")+":"+String(m).padStart(2,"0");
+}
+const ROUND_LABELS = {R64:"Babak 64 Besar", R32:"32 Besar", R16:"16 Besar", QF:"Perempat Final", SF:"Semifinal", F:"Final"};
+function roundNamesFor(quota){ return quota===64 ? ["R64","R32","R16","QF","SF","F"] : ["R32","R16","QF","SF","F"]; }
+
 /* ============ STORAGE KEYS ============ */
 const KEY_META = "pbsakral:v2:meta";
 const KEY_INDEX = "pbsakral:v2:index";
+const KEY_DRAWING = "pbsakral:v2:drawing";
+const KEY_MATCHES = "pbsakral:v2:matches";
+const KEY_SCHEDULE = "pbsakral:v2:schedule";
 function regKey(id){ return "pbsakral:v2:reg:"+id; }
 
 /* ============ STATE ============ */
@@ -392,6 +431,95 @@ async function saveIndex(){
   try{ await window.storage.set(KEY_INDEX, JSON.stringify(INDEX), true); return true; }
   catch(e){ showToast("Gagal menyimpan indeks pendaftar."); return false; }
 }
+
+/* ============ PHASE 2 STATE: DRAWING / MATCHES / SCHEDULE ============ */
+let DRAWING = {};   // { PRIME: {locked, slots:[participantId|null,...], auditLog:[...]}, ... }
+let MATCHES = {};   // { PRIME: [ {id,category,round,roundIndex,matchNo,sideA,sideB}, ... ], ... }
+let SCHEDULE = [];  // [ {id, matchId, category, day, timeIndex, court} ]
+
+function defaultDrawingFor(cat){ return { locked:false, slots: new Array(cat.quota).fill(null), auditLog:[] }; }
+async function loadPhase2(){
+  try{
+    const res = await window.storage.get(KEY_DRAWING, true);
+    DRAWING = (res && res.value) ? JSON.parse(res.value) : {};
+  }catch(e){ DRAWING = {}; }
+  META.categories.forEach(cat=>{ if(!DRAWING[cat.code]) DRAWING[cat.code] = defaultDrawingFor(cat); });
+  try{
+    const res = await window.storage.get(KEY_MATCHES, true);
+    MATCHES = (res && res.value) ? JSON.parse(res.value) : {};
+  }catch(e){ MATCHES = {}; }
+  try{
+    const res = await window.storage.get(KEY_SCHEDULE, true);
+    SCHEDULE = (res && res.value) ? JSON.parse(res.value) : [];
+  }catch(e){ SCHEDULE = []; }
+}
+async function saveDrawing(){ try{ await window.storage.set(KEY_DRAWING, JSON.stringify(DRAWING), true); return true; }catch(e){ showToast("Gagal menyimpan drawing."); return false; } }
+async function saveMatches(){ try{ await window.storage.set(KEY_MATCHES, JSON.stringify(MATCHES), true); return true; }catch(e){ showToast("Gagal menyimpan bracket."); return false; } }
+async function saveSchedule(){ try{ await window.storage.set(KEY_SCHEDULE, JSON.stringify(SCHEDULE), true); return true; }catch(e){ showToast("Gagal menyimpan jadwal."); return false; } }
+
+function regSummary(id){ return id ? INDEX.find(x=>x.id===id) : null; }
+function participantLabel(id){
+  const s = regSummary(id);
+  return s ? (s.player1+" / "+s.player2) : "\u2014 (kosong)";
+}
+function registeredPoolFor(catCode){
+  return INDEX.filter(r=>r.category===catCode && r.status==="REGISTERED");
+}
+function usedSlotParticipants(catCode, excludeIndex){
+  const slots = DRAWING[catCode].slots;
+  const used = new Set();
+  slots.forEach((pid,idx)=>{ if(pid && idx!==excludeIndex) used.add(pid); });
+  return used;
+}
+function generateBracketForCategory(catCode){
+  const cat = catByCode(catCode);
+  const slots = DRAWING[catCode].slots;
+  const roundNames = roundNamesFor(cat.quota);
+  const flat = [];
+  let prevRound = [];
+  for(let i=0;i<slots.length;i+=2){
+    const m = { id:uid(), category:catCode, round:roundNames[0], roundIndex:0, matchNo:(i/2)+1,
+      sideA:{type:"participant", participantId: slots[i]||null},
+      sideB:{type:"participant", participantId: slots[i+1]||null} };
+    flat.push(m); prevRound.push(m);
+  }
+  for(let r=1;r<roundNames.length;r++){
+    const curRound = [];
+    for(let i=0;i<prevRound.length;i+=2){
+      const m = { id:uid(), category:catCode, round:roundNames[r], roundIndex:r, matchNo:(i/2)+1,
+        sideA:{type:"winnerOf", matchId: prevRound[i].id},
+        sideB:{type:"winnerOf", matchId: prevRound[i+1].id} };
+      flat.push(m); curRound.push(m);
+    }
+    prevRound = curRound;
+  }
+  MATCHES[catCode] = flat;
+}
+function matchById(catCode, id){ return (MATCHES[catCode]||[]).find(m=>m.id===id); }
+function matchSideLabel(catCode, side){
+  if(side.type==="participant"){
+    return side.participantId ? participantLabel(side.participantId) : "\u2014 (kosong)";
+  }
+  const ref = matchById(catCode, side.matchId);
+  if(!ref) return "TBD";
+  return "Pemenang " + ROUND_LABELS[ref.round] + " #" + ref.matchNo;
+}
+function scheduleFor(matchId){ return SCHEDULE.find(s=>s.matchId===matchId); }
+function scheduleOccupant(day, timeIndex, court){ return SCHEDULE.find(s=>s.day===day && s.timeIndex===timeIndex && s.court===court); }
+function participantSchedulesOnDay(participantId, day, excludeScheduleId){
+  const out = [];
+  SCHEDULE.forEach(s=>{
+    if(s.day!==day) return;
+    if(excludeScheduleId && s.id===excludeScheduleId) return;
+    const cat = s.category;
+    const m = matchById(cat, s.matchId);
+    if(!m) return;
+    const pids = [m.sideA.type==="participant"?m.sideA.participantId:null, m.sideB.type==="participant"?m.sideB.participantId:null];
+    if(pids.includes(participantId)) out.push(s.timeIndex);
+  });
+  return out;
+}
+
 function indexSummary(reg){
   return {
     id: reg.id, regNo: reg.regNo, category: reg.category, status: reg.status,
@@ -1122,6 +1250,9 @@ function adminTabs(active){
     ["admin-dashboard","Dashboard"],
     ["admin-list","Pendaftar"],
     ["admin-participants","Peserta"],
+    ["admin-drawing","Drawing"],
+    ["admin-bracket","Bracket"],
+    ["admin-schedule","Jadwal"],
     ["admin-settings","Pengaturan"],
   ];
   const wrap = el("div",{class:"tabs"});
@@ -1601,7 +1732,345 @@ function viewAdminParticipants(){
   return wrap;
 }
 
-/* ============ ADMIN: SETTINGS ============ */
+/* ============ ADMIN: DRAWING (Phase 2) ============ */
+let drawingActiveCat = null;
+function viewAdminDrawing(){
+  if(!drawingActiveCat) drawingActiveCat = META.categories[0].code;
+  const wrap = el("div",{});
+  wrap.appendChild(topbar("admin"));
+  const sec = el("div",{class:"section"});
+  sec.appendChild(adminTabs("admin-drawing"));
+  sec.appendChild(el("div",{class:"section-title"},"Drawing Manual per Kategori"));
+
+  const catTabs = el("div",{class:"tabs"});
+  META.categories.forEach(cat=>{
+    catTabs.appendChild(el("button",{class: drawingActiveCat===cat.code?"active":"", onclick:()=>{ drawingActiveCat=cat.code; render(); }}, cat.name));
+  });
+  sec.appendChild(catTabs);
+
+  const cat = catByCode(drawingActiveCat);
+  const drawing = DRAWING[cat.code];
+  const pool = registeredPoolFor(cat.code);
+  const filled = drawing.slots.filter(Boolean).length;
+
+  const headCard = el("div",{class:"card"});
+  const headRow = el("div",{style:"display:flex;justify-content:space-between;align-items:center;"});
+  headRow.appendChild(el("div",{},[
+    el("div",{style:"font-weight:800;font-size:14px;"},cat.name + " \u2014 " + cat.quota + " slot"),
+    el("div",{style:"font-size:12px;color:var(--ink-dim);margin-top:2px;"}, filled+"/"+cat.quota+" slot terisi \u00b7 "+pool.length+" peserta resmi tersedia")
+  ]));
+  headRow.appendChild(drawing.locked
+    ? el("span",{class:"badge b-ok"},[el("span",{class:"b-dot"}),"Terkunci"])
+    : el("span",{class:"badge b-list"},[el("span",{class:"b-dot"}),"Draft"]));
+  headCard.appendChild(headRow);
+  if(drawing.locked){
+    headCard.appendChild(el("button",{class:"btn btn-outline btn-block", style:"margin-top:12px;", onclick:()=>openConfirm({
+      title:"Buka Kunci Drawing?",
+      body:"Membuka kunci akan menghapus bracket dan jadwal kategori ini yang sudah dibuat, sehingga perlu di-generate ulang setelah drawing diubah dan dikunci lagi.",
+      confirmLabel:"Unlock", danger:true,
+      onConfirm: async ()=>{
+        drawing.locked = false;
+        drawing.auditLog.push({action:"UNLOCK", at: nowIso()});
+        MATCHES[cat.code] = [];
+        SCHEDULE = SCHEDULE.filter(s=>s.category!==cat.code);
+        await saveDrawing(); await saveMatches(); await saveSchedule();
+        showToast("Drawing dibuka kembali.");
+        render();
+      }
+    })},"Unlock Drawing"));
+  } else {
+    const row = el("div",{style:"display:flex;gap:8px;margin-top:12px;"});
+    row.appendChild(el("button",{class:"btn btn-outline btn-sm", style:"flex:1;", onclick: async ()=>{
+      const ok = await saveDrawing();
+      if(ok) showToast("Draft drawing disimpan.");
+    }},"Simpan Draft"));
+    row.appendChild(el("button",{class:"btn btn-gold btn-sm", style:"flex:1;", disabled: filled===0, onclick:()=>openConfirm({
+      title:"Kunci Drawing "+cat.name+"?",
+      body:"Setelah dikunci, bracket akan dibuat otomatis dari slot saat ini. Perubahan berikutnya memerlukan Unlock.",
+      confirmLabel:"Lock Drawing",
+      onConfirm: async ()=>{
+        drawing.locked = true;
+        drawing.auditLog.push({action:"LOCK", at: nowIso()});
+        generateBracketForCategory(cat.code);
+        await saveDrawing(); await saveMatches();
+        showToast("Drawing dikunci & bracket dibuat.");
+        render();
+      }
+    })},"Lock Drawing"));
+    headCard.appendChild(row);
+  }
+  sec.appendChild(headCard);
+
+  const slotsCard = el("div",{class:"card"});
+  drawing.slots.forEach((pid, idx)=>{
+    const row = el("div",{class:"drawing-slot-row"});
+    row.appendChild(el("div",{class:"drawing-slot-no"},"#"+(idx+1)));
+    if(drawing.locked){
+      row.appendChild(el("div",{style:"flex:1;font-size:13px;"}, pid? participantLabel(pid) : "\u2014 (kosong)"));
+    } else {
+      const used = usedSlotParticipants(cat.code, idx);
+      const sel = el("select",{});
+      sel.appendChild(el("option",{value:""},"\u2014 (kosong)"));
+      pool.forEach(p=>{
+        if(used.has(p.id)) return;
+        sel.appendChild(el("option",{value:p.id, selected: p.id===pid?"selected":null}, p.regNo+" \u2014 "+p.player1+"/"+p.player2));
+      });
+      sel.value = pid || "";
+      sel.addEventListener("change", (e)=>{ drawing.slots[idx] = e.target.value || null; render(); });
+      row.appendChild(sel);
+    }
+    slotsCard.appendChild(row);
+  });
+  sec.appendChild(slotsCard);
+  wrap.appendChild(sec);
+  return wrap;
+}
+
+/* ============ ADMIN: BRACKET (Phase 2) ============ */
+let bracketActiveCat = null;
+let moveMatchTarget = null; // {category, match}
+function viewAdminBracket(){
+  if(!bracketActiveCat) bracketActiveCat = META.categories[0].code;
+  const wrap = el("div",{});
+  wrap.appendChild(topbar("admin"));
+  const sec = el("div",{class:"section"});
+  sec.appendChild(adminTabs("admin-bracket"));
+  sec.appendChild(el("div",{class:"section-title"},"Bracket Knockout"));
+
+  const catTabs = el("div",{class:"tabs"});
+  META.categories.forEach(cat=>{
+    catTabs.appendChild(el("button",{class: bracketActiveCat===cat.code?"active":"", onclick:()=>{ bracketActiveCat=cat.code; render(); }}, cat.name));
+  });
+  sec.appendChild(catTabs);
+
+  const cat = catByCode(bracketActiveCat);
+  const matches = MATCHES[cat.code] || [];
+  if(matches.length===0){
+    sec.appendChild(el("div",{class:"empty"},"Bracket belum dibuat. Selesaikan Drawing lalu tekan Lock Drawing untuk kategori ini."));
+    wrap.appendChild(sec);
+    return wrap;
+  }
+  const roundNames = roundNamesFor(cat.quota);
+  roundNames.forEach(rn=>{
+    const block = el("div",{class:"round-block"});
+    block.appendChild(el("div",{class:"round-title"}, ROUND_LABELS[rn]));
+    matches.filter(m=>m.round===rn).sort((a,b)=>a.matchNo-b.matchNo).forEach(m=>{
+      const row = el("div",{class:"match-row"});
+      const sched = scheduleFor(m.id);
+      const top = el("div",{class:"m-top"});
+      top.appendChild(el("span",{},"Match #"+m.matchNo));
+      top.appendChild(el("button",{class:"btn btn-outline btn-xs", onclick:()=>{ moveMatchTarget={category:cat.code, matchId:m.id}; render(); }},
+        sched ? "Jadwal: "+ (TOURNAMENT_DAYS.find(d=>d.day===sched.day)||{}).label?.split(",")[0] + " " + timeLabel(sched.timeIndex)+" C"+sched.court : "Atur Jadwal"));
+      row.appendChild(top);
+      row.appendChild(el("div",{class:"m-side"}, matchSideLabel(cat.code, m.sideA)));
+      row.appendChild(el("div",{class:"m-vs"},"vs"));
+      row.appendChild(el("div",{class:"m-side"}, matchSideLabel(cat.code, m.sideB)));
+      block.appendChild(row);
+    });
+    sec.appendChild(block);
+  });
+  wrap.appendChild(sec);
+  if(moveMatchTarget) wrap.appendChild(renderMoveMatchModal());
+  return wrap;
+}
+
+/* ============ ADMIN: SCHEDULE (Phase 2) ============ */
+let scheduleActiveDay = 1;
+function viewAdminSchedule(){
+  const wrap = el("div",{});
+  wrap.appendChild(topbar("admin"));
+  const sec = el("div",{class:"section"});
+  sec.appendChild(adminTabs("admin-schedule"));
+  sec.appendChild(el("div",{class:"section-title"},"Jadwal 5 Court"));
+
+  const totalMatches = META.categories.reduce((s,c)=>s+(MATCHES[c.code]||[]).length,0);
+  if(totalMatches===0){
+    sec.appendChild(el("div",{class:"empty"},"Belum ada bracket. Lock drawing minimal satu kategori terlebih dahulu."));
+    wrap.appendChild(sec);
+    return wrap;
+  }
+
+  sec.appendChild(el("button",{class:"btn btn-gold btn-block", style:"margin-bottom:14px;", onclick: async ()=>{
+    const n = await generateDraftSchedule();
+    showToast(n+" match babak pertama dijadwalkan otomatis.");
+    render();
+  }},"Generate Draft Jadwal (Babak Pertama)"));
+
+  const dayTabs = el("div",{class:"tabs"});
+  TOURNAMENT_DAYS.forEach(d=>{
+    dayTabs.appendChild(el("button",{class: scheduleActiveDay===d.day?"active":"", onclick:()=>{ scheduleActiveDay=d.day; render(); }}, d.label.split(",")[0]));
+  });
+  sec.appendChild(dayTabs);
+
+  const scrollWrap = el("div",{class:"sched-scroll"});
+  const table = el("table",{class:"sched-table"});
+  const thead = el("tr",{});
+  thead.appendChild(el("th",{},"Jam"));
+  COURTS.forEach(c=> thead.appendChild(el("th",{},"Court "+c)));
+  table.appendChild(thead);
+  for(let idx=0; idx<SLOTS_PER_DAY; idx++){
+    const tr = el("tr",{});
+    tr.appendChild(el("td",{class:"sched-time"}, timeLabel(idx)));
+    COURTS.forEach(court=>{
+      const occ = scheduleOccupant(scheduleActiveDay, idx, court);
+      let cell;
+      if(occ){
+        const m = matchById(occ.category, occ.matchId);
+        const catShort = occ.category.slice(0,3);
+        cell = el("td",{},[el("div",{class:"sched-cell filled", onclick:()=>{ moveMatchTarget={category:occ.category, matchId:occ.matchId}; render(); }},
+          catShort+" "+(m? m.round+"#"+m.matchNo : ""))]);
+      } else {
+        cell = el("td",{},[el("div",{class:"sched-cell empty"},"-")]);
+      }
+      tr.appendChild(cell);
+    });
+    table.appendChild(tr);
+  }
+  scrollWrap.appendChild(table);
+  sec.appendChild(scrollWrap);
+  wrap.appendChild(sec);
+  if(moveMatchTarget) wrap.appendChild(renderMoveMatchModal());
+  return wrap;
+}
+
+async function generateDraftSchedule(){
+  let queue = [];
+  META.categories.forEach(cat=>{
+    (MATCHES[cat.code]||[]).forEach(m=>{
+      if(m.roundIndex!==0) return;
+      if(m.sideA.type!=="participant" || m.sideB.type!=="participant") return;
+      if(!m.sideA.participantId || !m.sideB.participantId) return;
+      if(scheduleFor(m.id)) return;
+      queue.push(m);
+    });
+  });
+  const lastSlot = {}; // "day-participantId" -> timeIndex
+  SCHEDULE.forEach(s=>{
+    const m = matchById(s.category, s.matchId);
+    if(!m) return;
+    [m.sideA, m.sideB].forEach(side=>{
+      if(side.type==="participant" && side.participantId){
+        const key = s.day+"-"+side.participantId;
+        lastSlot[key] = Math.max(lastSlot[key]===undefined?-99:lastSlot[key], s.timeIndex);
+      }
+    });
+  });
+  let scheduledCount = 0;
+  outer:
+  for(const d of TOURNAMENT_DAYS){
+    for(let idx=0; idx<SLOTS_PER_DAY; idx++){
+      for(const court of COURTS){
+        if(queue.length===0) break outer;
+        if(scheduleOccupant(d.day, idx, court)) continue;
+        let pickIdx = -1;
+        for(let qi=0; qi<queue.length; qi++){
+          const m = queue[qi];
+          const pidA = m.sideA.participantId, pidB = m.sideB.participantId;
+          const lastA = lastSlot[d.day+"-"+pidA], lastB = lastSlot[d.day+"-"+pidB];
+          const okA = lastA===undefined || (idx-lastA) > REST_MIN_GAP;
+          const okB = lastB===undefined || (idx-lastB) > REST_MIN_GAP;
+          if(okA && okB){ pickIdx = qi; break; }
+        }
+        if(pickIdx===-1) continue;
+        const m = queue.splice(pickIdx,1)[0];
+        SCHEDULE.push({ id:uid(), matchId:m.id, category:m.category, day:d.day, timeIndex:idx, court });
+        lastSlot[d.day+"-"+m.sideA.participantId] = idx;
+        lastSlot[d.day+"-"+m.sideB.participantId] = idx;
+        scheduledCount++;
+      }
+    }
+  }
+  await saveSchedule();
+  return scheduledCount;
+}
+
+function renderMoveMatchModal(){
+  const {category, matchId} = moveMatchTarget;
+  const m = matchById(category, matchId);
+  const overlay = el("div",{class:"modal-overlay", onclick:(e)=>{ if(e.target===overlay){ moveMatchTarget=null; render(); } }});
+  const modal = el("div",{class:"modal"});
+  modal.appendChild(el("h3",{},"Atur Jadwal Match"));
+  modal.appendChild(el("p",{}, matchSideLabel(category,m.sideA) + " vs " + matchSideLabel(category,m.sideB) + " \u00b7 " + ROUND_LABELS[m.round] + " #" + m.matchNo));
+  const existing = scheduleFor(m.id);
+
+  let selDay = existing? existing.day : TOURNAMENT_DAYS[0].day;
+  let selTime = existing? existing.timeIndex : 0;
+  let selCourt = existing? existing.court : COURTS[0];
+
+  const dayField = el("div",{class:"field"});
+  dayField.appendChild(el("label",{},"Hari"));
+  const daySel = el("select",{});
+  TOURNAMENT_DAYS.forEach(d=> daySel.appendChild(el("option",{value:d.day, selected: d.day===selDay?"selected":null}, d.label)));
+  daySel.addEventListener("change",(e)=>{ selDay=Number(e.target.value); });
+  dayField.appendChild(daySel);
+  modal.appendChild(dayField);
+
+  const timeField = el("div",{class:"field"});
+  timeField.appendChild(el("label",{},"Jam"));
+  const timeSel = el("select",{});
+  for(let i=0;i<SLOTS_PER_DAY;i++){ timeSel.appendChild(el("option",{value:i, selected:i===selTime?"selected":null}, timeLabel(i))); }
+  timeSel.addEventListener("change",(e)=>{ selTime=Number(e.target.value); });
+  timeField.appendChild(timeSel);
+  modal.appendChild(timeField);
+
+  const courtField = el("div",{class:"field"});
+  courtField.appendChild(el("label",{},"Court"));
+  const courtSel = el("select",{});
+  COURTS.forEach(c=> courtSel.appendChild(el("option",{value:c, selected:c===selCourt?"selected":null}, "Court "+c)));
+  courtSel.addEventListener("change",(e)=>{ selCourt=Number(e.target.value); });
+  courtField.appendChild(courtSel);
+  modal.appendChild(courtField);
+
+  const errBox = el("div",{});
+  modal.appendChild(errBox);
+
+  const actions = el("div",{class:"modal-actions"});
+  if(existing){
+    actions.appendChild(el("button",{class:"btn btn-danger", onclick: async ()=>{
+      SCHEDULE = SCHEDULE.filter(s=>s.id!==existing.id);
+      moveMatchTarget=null;
+      await saveSchedule();
+      showToast("Match dihapus dari jadwal.");
+      render();
+    }},"Hapus"));
+  } else {
+    actions.appendChild(el("button",{class:"btn btn-outline", onclick:()=>{ moveMatchTarget=null; render(); }},"Batal"));
+  }
+  actions.appendChild(el("button",{class:"btn btn-gold", onclick: async ()=>{
+    errBox.innerHTML = "";
+    const occ = scheduleOccupant(selDay, selTime, selCourt);
+    if(occ && (!existing || occ.id!==existing.id)){
+      errBox.appendChild(el("div",{class:"flag"},"Slot ini sudah dipakai match lain."));
+      return;
+    }
+    const pids = [m.sideA.type==="participant"?m.sideA.participantId:null, m.sideB.type==="participant"?m.sideB.participantId:null].filter(Boolean);
+    for(const pid of pids){
+      const others = participantSchedulesOnDay(pid, selDay, existing? existing.id : null);
+      if(others.includes(selTime)){
+        errBox.appendChild(el("div",{class:"flag"},"Salah satu peserta sudah dijadwalkan pada jam yang sama."));
+        return;
+      }
+    }
+    let restWarning = false;
+    for(const pid of pids){
+      const others = participantSchedulesOnDay(pid, selDay, existing? existing.id : null);
+      if(others.some(t=>Math.abs(t-selTime)<=REST_MIN_GAP && t!==selTime)) restWarning = true;
+    }
+    if(existing){
+      existing.day=selDay; existing.timeIndex=selTime; existing.court=selCourt;
+    } else {
+      SCHEDULE.push({id:uid(), matchId:m.id, category, day:selDay, timeIndex:selTime, court:selCourt});
+    }
+    moveMatchTarget = null;
+    await saveSchedule();
+    showToast(restWarning? "Tersimpan \u2014 perhatikan waktu istirahat peserta cukup pendek." : "Jadwal tersimpan.");
+    render();
+  }},"Simpan"));
+  modal.appendChild(actions);
+  overlay.appendChild(modal);
+  return overlay;
+}
+
 function viewAdminSettings(){
   const wrap = el("div",{});
   wrap.appendChild(topbar("admin"));
@@ -1697,6 +2166,9 @@ function render(){
     case "admin-list": view = adminSession? viewAdminList() : viewAdminLogin(); break;
     case "admin-detail": view = adminSession? viewAdminDetail(route.params) : viewAdminLogin(); break;
     case "admin-participants": view = adminSession? viewAdminParticipants() : viewAdminLogin(); break;
+    case "admin-drawing": view = adminSession? viewAdminDrawing() : viewAdminLogin(); break;
+    case "admin-bracket": view = adminSession? viewAdminBracket() : viewAdminLogin(); break;
+    case "admin-schedule": view = adminSession? viewAdminSchedule() : viewAdminLogin(); break;
     case "admin-settings": view = adminSession? viewAdminSettings() : viewAdminLogin(); break;
     default: view = viewHome();
   }
@@ -1709,6 +2181,7 @@ function render(){
 (async function init(){
   await loadMeta();
   await loadIndex();
+  await loadPhase2();
   ready = true;
   const urlParams = new URLSearchParams(location.search);
   const regParam = urlParams.get("reg");
