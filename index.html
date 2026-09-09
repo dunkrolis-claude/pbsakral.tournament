@@ -338,7 +338,7 @@
 <script type="module">
 /* ============ FIREBASE ============ */
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
-import { getFirestore, doc, getDoc, setDoc, getDocs, collection } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
+import { getFirestore, doc, getDoc, setDoc, getDocs, collection, deleteDoc } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
 
 const firebaseConfig = {
   apiKey: "AIzaSyABSfINhL1vjUHujAkaZOuqzajJvBys3JQ",
@@ -454,7 +454,6 @@ let REG_CACHE = {};    // id -> full record (loaded lazily)
 let ready = false;
 let route = {name:"home", params:{}};
 let adminSession = false;
-let refereeSession = false;
 let toastTimer = null;
 
 function uid(){ return Math.random().toString(36).slice(2,10) + Date.now().toString(36); }
@@ -479,7 +478,7 @@ function normalizeWhatsapp(raw){
 
 function defaultMeta(){
   return {
-    settings: { adminPin: "SAKRAL2026", refereePin: "WASIT2026", registrationOpen: true, whatsappEnabled: true, scoringTarget: 42 },
+    settings: { adminPin: "SAKRAL2026", registrationOpen: true, whatsappEnabled: true, scoringTarget: 42 },
     categories: DEFAULT_CATEGORIES.map(c => ({...c})),
     counters: {PRM:0, COR:0, RIS:0, QUE:0},
   };
@@ -493,7 +492,6 @@ async function loadMeta(){
       const d = defaultMeta();
       if(!META.settings) META.settings = d.settings;
       if(META.settings.whatsappEnabled===undefined) META.settings.whatsappEnabled = true;
-      if(!META.settings.refereePin) META.settings.refereePin = d.settings.refereePin;
       if(!META.settings.scoringTarget) META.settings.scoringTarget = d.settings.scoringTarget;
       if(!META.categories) META.categories = d.categories;
       if(!META.counters) META.counters = d.counters;
@@ -580,7 +578,7 @@ function generateBracketForCategory(catCode){
     const m = { id:uid(), category:catCode, round:roundNames[0], roundIndex:0, matchNo:(i/2)+1,
       sideA:{type:"participant", participantId: slots[i]||null, resolvedFrom:null},
       sideB:{type:"participant", participantId: slots[i+1]||null, resolvedFrom:null},
-      status:null, scoreA:null, scoreB:null, winnerParticipantId:null, depositCharged:false, kokCount:null,
+      status:null, scoreA:null, scoreB:null, winnerParticipantId:null, depositCharged:false, kokCount:null, refereeName:"",
       actualCallAt:"", actualStartAt:"", actualFinishAt:"", liveState:null };
     flat.push(m); prevRound.push(m);
   }
@@ -590,7 +588,7 @@ function generateBracketForCategory(catCode){
       const m = { id:uid(), category:catCode, round:roundNames[r], roundIndex:r, matchNo:(i/2)+1,
         sideA:{type:"winnerOf", matchId: prevRound[i].id},
         sideB:{type:"winnerOf", matchId: prevRound[i+1].id},
-        status:null, scoreA:null, scoreB:null, winnerParticipantId:null, depositCharged:false, kokCount:null,
+        status:null, scoreA:null, scoreB:null, winnerParticipantId:null, depositCharged:false, kokCount:null, refereeName:"",
         actualCallAt:"", actualStartAt:"", actualFinishAt:"", liveState:null };
       flat.push(m); curRound.push(m);
     }
@@ -696,6 +694,7 @@ function indexSummary(reg){
     paymentStatus: reg.payment ? reg.payment.status : "UNPAID",
     depositInitial: reg.deposit ? reg.deposit.initial : 0,
     depositBalance: reg.deposit ? reg.deposit.balance : 0,
+    isDemo: !!reg.isDemo,
   };
 }
 function updateIndexEntry(reg){
@@ -827,7 +826,7 @@ function statusBadge(status){
 
 function topbar(activeTab){
   const bar = el("div",{class:"topbar"});
-  const brand = el("div",{class:"brand", onclick:()=>nav(adminSession?"admin-dashboard": refereeSession?"referee-list":"home")},[
+  const brand = el("div",{class:"brand", onclick:()=>nav(adminSession?"admin-dashboard":"home")},[
     el("img",{src:LOGO_EVENT, alt:"1 Dekade PB Sakral"}),
     el("div",{class:"brand-text"},["PB SAKRAL", el("small",{},"1 DEKADE 2026")]),
     el("div",{class:"header-logos"},[
@@ -839,13 +838,10 @@ function topbar(activeTab){
   const navWrap = el("div",{class:"topnav"});
   if(adminSession){
     navWrap.appendChild(el("button",{onclick:()=>{ adminSession=false; nav("home"); }},"Keluar"));
-  } else if(refereeSession){
-    navWrap.appendChild(el("button",{onclick:()=>{ refereeSession=false; nav("home"); }},"Keluar"));
   } else {
     navWrap.appendChild(el("button",{class: activeTab==="home"?"active":"", onclick:()=>nav("home")},"Beranda"));
     navWrap.appendChild(el("button",{class: activeTab==="status"?"active":"", onclick:()=>nav("status")},"Status"));
     navWrap.appendChild(el("button",{class: activeTab==="live"?"active":"", onclick:()=>nav("public-live")},"Live"));
-    navWrap.appendChild(el("button",{class: activeTab==="referee"?"active":"", onclick:()=>nav("referee-login")},"Wasit"));
     navWrap.appendChild(el("button",{class: activeTab==="admin"?"active":"", onclick:()=>nav("admin-login")},"Admin"));
   }
   bar.appendChild(navWrap);
@@ -2546,7 +2542,7 @@ function viewAdminMatchControl(){
     const cat = catByCode(match.category);
     const card = el("div",{class:"mc-card"});
     const top = el("div",{class:"mc-top"});
-    top.appendChild(el("div",{class:"mc-meta"}, timeLabel(sched.timeIndex)+" \u00b7 Court "+sched.court+" \u00b7 "+cat.name+" "+ROUND_LABELS[match.round]+" #"+match.matchNo));
+    top.appendChild(el("div",{class:"mc-meta"}, timeLabel(sched.timeIndex)+" \u00b7 Court "+sched.court+" \u00b7 "+cat.name+" "+ROUND_LABELS[match.round]+" #"+match.matchNo+(match.refereeName?" \u00b7 Wasit: "+match.refereeName:"")));
     top.appendChild(mcStatusBadge(match.status));
     card.appendChild(top);
 
@@ -2707,32 +2703,13 @@ function viewAdminFinance(){
 let refActiveDay = 1;
 let refTarget = null; // {category, matchId}
 
-function viewRefereeLogin(){
+function viewAdminReferee(){
   const wrap = el("div",{});
-  wrap.appendChild(topbar("referee"));
-  const pw = el("div",{class:"pin-wrap"});
-  pw.appendChild(el("img",{class:"badge-shield", src:LOGO_PBSAKRAL, alt:"PB Sakral"}));
-  pw.appendChild(el("h2",{style:"font-size:20px;margin:0 0 6px;"},"Akses Wasit"));
-  pw.appendChild(el("div",{style:"color:var(--ink-dim);font-size:13px;margin-bottom:18px;"},"Masukkan kode akses wasit untuk membuka daftar match."));
-  const input = el("input",{type:"text", placeholder:"Kode akses", style:"width:100%;background:var(--bg-elev);border:1px solid var(--line);border-radius:10px;padding:12px;color:var(--ink);font-size:14.5px;text-align:center;margin-bottom:12px;"});
-  input.addEventListener("keydown",(e)=>{ if(e.key==="Enter") tryRefLogin(input.value); });
-  pw.appendChild(input);
-  pw.appendChild(el("button",{class:"btn btn-gold btn-block", onclick:()=>tryRefLogin(input.value)},"Masuk"));
-  pw.appendChild(el("div",{class:"footer-note"},"Kode akses wasit diberikan oleh panitia inti, terpisah dari kode akses Admin."));
-  wrap.appendChild(pw);
-  return wrap;
-}
-function tryRefLogin(val){
-  if(val === META.settings.refereePin){ refereeSession = true; nav("referee-list"); }
-  else { showToast("Kode akses salah."); }
-}
-
-function viewRefereeList(){
-  const wrap = el("div",{});
-  wrap.appendChild(topbar("referee"));
+  wrap.appendChild(topbar("admin"));
   const sec = el("div",{class:"section"});
-  sec.appendChild(el("h2",{style:"font-size:20px;margin:0 0 4px;"},"Pilih Match"));
-  sec.appendChild(el("div",{style:"color:var(--ink-dim);font-size:13px;margin-bottom:14px;"},"Tap match yang akan kamu wasiti."));
+  sec.appendChild(adminTabs("admin-referee"));
+  sec.appendChild(el("h2",{style:"font-size:20px;margin:0 0 4px;"},"Pilih Match untuk Wasit"));
+  sec.appendChild(el("div",{style:"color:var(--ink-dim);font-size:13px;margin-bottom:14px;"},"Serahkan HP/tablet ini ke wasit yang bertugas setelah memilih match."));
 
   const dayTabs = el("div",{class:"tabs"});
   TOURNAMENT_DAYS.forEach(d=>{
@@ -2750,26 +2727,37 @@ function viewRefereeList(){
   }
   entries.forEach(({sched, match})=>{
     const cat = catByCode(match.category);
-    const row = el("div",{class:"ref-match-row", onclick:()=>{
+    const row = el("div",{class:"ref-match-row", style:"cursor:default;flex-direction:column;align-items:stretch;gap:8px;"});
+    const topRow = el("div",{style:"display:flex;justify-content:space-between;align-items:center;cursor:pointer;", onclick:()=>{
       refTarget = {category: match.category, matchId: match.id};
-      nav(match.liveScoring ? "referee-scoring" : "referee-setup", refTarget);
+      nav(match.liveScoring ? "admin-referee-scoring" : "admin-referee-setup", refTarget);
     }});
     const left = el("div",{});
     left.appendChild(el("div",{style:"font-size:11px;color:var(--ink-faint);font-weight:700;"}, timeLabel(sched.timeIndex)+" \u00b7 Court "+sched.court));
     left.appendChild(el("div",{style:"font-weight:700;font-size:13.5px;margin-top:2px;"}, cat.name+" "+ROUND_LABELS[match.round]+" #"+match.matchNo));
     left.appendChild(el("div",{style:"font-size:12px;color:var(--ink-dim);margin-top:2px;"}, matchSideLabel(match.category,match.sideA)+" vs "+matchSideLabel(match.category,match.sideB)));
-    row.appendChild(left);
-    row.appendChild(mcStatusBadge(match.status));
+    topRow.appendChild(left);
+    topRow.appendChild(mcStatusBadge(match.status));
+    row.appendChild(topRow);
+
+    const refField = el("div",{style:"display:flex;align-items:center;gap:8px;"});
+    refField.appendChild(el("span",{style:"font-size:11px;color:var(--ink-faint);white-space:nowrap;"},"\ud83d\udc64 Wasit:"));
+    const refInput = el("input",{type:"text", placeholder:"Nama wasit bertugas", value: match.refereeName||"", style:"flex:1;background:var(--bg-elev);border:1px solid var(--line);border-radius:8px;padding:7px 10px;color:var(--ink);font-size:12.5px;"});
+    refInput.addEventListener("click",(e)=>e.stopPropagation());
+    refInput.addEventListener("change", async (e)=>{ match.refereeName = e.target.value; await saveMatches(); showToast("Wasit ditetapkan: "+(e.target.value||"-")); });
+    refField.appendChild(refInput);
+    row.appendChild(refField);
+
     sec.appendChild(row);
   });
   wrap.appendChild(sec);
   return wrap;
 }
 
-function viewRefereeSetup(params){
+function viewAdminRefereeSetup(params){
   const wrap = el("div",{});
-  wrap.appendChild(topbar("referee"));
-  wrap.appendChild(backRow(()=>nav("referee-list")));
+  wrap.appendChild(topbar("admin"));
+  wrap.appendChild(backRow(()=>nav("admin-referee")));
   const {category, matchId} = params;
   const m = matchById(category, matchId);
   if(!m){ wrap.appendChild(el("div",{class:"section"},[el("div",{class:"empty"},"Match tidak ditemukan.")])); return wrap; }
@@ -2831,7 +2819,7 @@ function viewRefereeSetup(params){
     };
     if(m.status!=="ON_COURT"){ m.status = "ON_COURT"; if(!m.actualStartAt) m.actualStartAt = nowIso(); }
     await saveMatches();
-    nav("referee-scoring", {category, matchId});
+    nav("admin-referee-scoring", {category, matchId});
   }},"Mulai Pertandingan"));
 
   wrap.appendChild(sec);
@@ -2856,7 +2844,7 @@ async function refPoint(category, matchId, winSide){
   if(ls.scoreA>=target || ls.scoreB>=target){
     await saveMatches();
     await mcFinish(category, m, ls.scoreA, ls.scoreB, ls.kokCount);
-    nav("referee-list");
+    nav("admin-referee");
     return;
   }
   await saveMatches();
@@ -2891,7 +2879,7 @@ function renderKokCountModal(){
     if(!nk || nk<1){ errBox.appendChild(el("div",{class:"flag"},"Jumlah kok minimal 1.")); return; }
     refPendingFinish = null;
     await mcFinish(category, m, scoreA, scoreB, nk);
-    nav("referee-list");
+    nav("admin-referee");
   }},"Simpan Hasil"));
   overlay.appendChild(modal);
   return overlay;
@@ -2906,9 +2894,9 @@ async function refUndo(category, matchId){
   render();
 }
 
-function viewRefereeScoring(params){
+function viewAdminRefereeScoring(params){
   const wrap = el("div",{});
-  wrap.appendChild(topbar("referee"));
+  wrap.appendChild(topbar("admin"));
   const {category, matchId} = params;
   const m = matchById(category, matchId);
   if(!m || !m.liveScoring){ wrap.appendChild(el("div",{class:"section"},[el("div",{class:"empty"},"Match belum di-setup.")])); return wrap; }
@@ -2916,7 +2904,8 @@ function viewRefereeScoring(params){
   const cat = catByCode(category);
 
   const sec = el("div",{class:"section"});
-  sec.appendChild(el("div",{style:"text-align:center;color:var(--ink-faint);font-size:11.5px;margin-bottom:10px;"}, cat.name+" \u00b7 "+ROUND_LABELS[m.round]+" #"+m.matchNo));
+  sec.appendChild(el("div",{style:"text-align:center;color:var(--ink-faint);font-size:11.5px;margin-bottom:2px;"}, cat.name+" \u00b7 "+ROUND_LABELS[m.round]+" #"+m.matchNo));
+  if(m.refereeName) sec.appendChild(el("div",{style:"text-align:center;color:var(--gold-bright);font-size:11.5px;font-weight:700;margin-bottom:10px;"},"\ud83d\udc64 Wasit: "+m.refereeName));
 
   const court = ls.servingSide==="A" ? (ls.scoreA%2===0?"Kanan":"Kiri") : (ls.scoreB%2===0?"Kanan":"Kiri");
   const serverName = ls.servingSide==="A" ? ls.sideAPlayers[ls.serverToggleA] : ls.sideBPlayers[ls.serverToggleB];
@@ -2951,15 +2940,119 @@ function viewRefereeScoring(params){
     onConfirm: async ()=>{
       if(ls.scoreA===ls.scoreB){ showToast("Skor tidak boleh sama, tambahkan poin dulu."); return; }
       await mcFinish(category, m, ls.scoreA, ls.scoreB, ls.kokCount);
-      nav("referee-list");
+      nav("admin-referee");
     }
   })},"Selesaikan Sekarang"));
   sec.appendChild(row);
 
-  sec.appendChild(el("button",{class:"btn btn-outline btn-block", style:"margin-top:10px;", onclick:()=>nav("referee-list")},"Kembali ke Daftar Match"));
+  sec.appendChild(el("button",{class:"btn btn-outline btn-block", style:"margin-top:10px;", onclick:()=>nav("admin-referee")},"Kembali ke Daftar Match"));
 
   wrap.appendChild(sec);
   return wrap;
+}
+
+/* ============ DEMO MODE ============ */
+const DEMO_PHOTO = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=";
+const DEMO_PLAYER_NAMES = ["Andi Wijaya","Budi Santoso","Citra Dewi","Dian Permata","Eka Prasetyo","Fajar Nugroho","Gita Lestari","Hendra Kurnia"];
+const DEMO_CLUBS = ["[DEMO] PB Cahaya","[DEMO] PB Garuda","[DEMO] PB Sinar","[DEMO] PB Merdeka"];
+
+function makeDemoReg(cat, p1, p2, status){
+  const regNo = nextRegNo(cat);
+  const nowT = nowIso();
+  const reg = {
+    id: uid(), regNo, category: cat.code, pendingCategory: null,
+    player1: p1, player2: p2, player1PhotoUrl: DEMO_PHOTO, player2PhotoUrl: DEMO_PHOTO,
+    club: DEMO_CLUBS[Math.floor(Math.random()*DEMO_CLUBS.length)],
+    whatsapp: "081200000000", whatsappNumberNormalized: "+6281200000000",
+    whatsappOptIn: true, whatsappOptInAt: nowT,
+    domicile: "Karawang", note: "Data contoh untuk demo aplikasi.",
+    verificationVideo: { type:"link", value:"" },
+    rulesAccepted: true, rulesAcceptedAt: nowT, categoryRulesVersion: CATEGORY_RULES_VERSION,
+    status, adminNote: "", createdAt: nowT, updatedAt: nowT,
+    payment: { amountDue: cat.fee+DEPOSIT_FEE, amountPaid: 0, senderName:"", proofDataUrl:"", status:"UNPAID", verifiedBy:"", verifiedAt:"" },
+    participant: null, deposit: null, notifications: [], isDemo: true,
+  };
+  if(status==="WAITING_PAYMENT" || status==="WAITING_VERIFICATION" || status==="REGISTERED"){
+    reg.payment.amountPaid = reg.payment.amountDue;
+    reg.payment.senderName = p1;
+  }
+  if(status==="WAITING_VERIFICATION" || status==="REGISTERED"){
+    reg.payment.proofDataUrl = DEMO_PHOTO;
+    reg.payment.status = "WAITING_VERIFICATION";
+  }
+  if(status==="REGISTERED"){
+    reg.payment.status = "PAID";
+    reg.payment.verifiedBy = "Demo";
+    reg.payment.verifiedAt = nowT;
+    reg.participant = { createdAt: nowT };
+    reg.deposit = { initial: DEPOSIT_FEE, balance: DEPOSIT_FEE };
+    reg.depositTransactions = [];
+  }
+  return reg;
+}
+
+async function seedDemoData(){
+  showToast("Membuat data demo\u2026");
+  let demoCat = META.categories.find(c=> !DRAWING[c.code].locked);
+  const bracketPairs = [];
+  if(demoCat){
+    for(let i=0;i<4;i++){
+      const reg = makeDemoReg(demoCat, DEMO_PLAYER_NAMES[i*2], DEMO_PLAYER_NAMES[i*2+1], "REGISTERED");
+      await persistReg(reg);
+      bracketPairs.push(reg);
+    }
+  }
+  const otherCat = META.categories.find(c=> c.code !== (demoCat&&demoCat.code)) || META.categories[0];
+  await persistReg(makeDemoReg(otherCat, "Iwan Setiawan","Joko Ariyanto","WAITING_VALIDATION"));
+  await persistReg(makeDemoReg(otherCat, "Kiki Amelia","Lina Marlina","WAITING_PAYMENT"));
+  await persistReg(makeDemoReg(otherCat, "Made Wirawan","Nyoman Ardika","WAITING_VERIFICATION"));
+
+  if(demoCat && bracketPairs.length===4){
+    const drawing = DRAWING[demoCat.code];
+    bracketPairs.forEach((r,i)=>{ drawing.slots[i] = r.id; });
+    drawing.locked = true;
+    generateBracketForCategory(demoCat.code);
+    await saveDrawing();
+    await saveMatches();
+    await generateDraftSchedule();
+    const m1 = MATCHES[demoCat.code].find(m=>m.roundIndex===0 && m.sideA.participantId===bracketPairs[0].id);
+    if(m1){
+      m1.refereeName = "Contoh Wasit";
+      await saveMatches();
+      await mcFinish(demoCat.code, m1, 42, 35, 2);
+    }
+    META.settings.demoCategory = demoCat.code;
+    await saveMeta();
+    showToast("Data demo siap! Termasuk 1 match yang sudah selesai + 1 match live untuk didemokan.");
+  } else {
+    showToast("Data pendaftar demo dibuat. Semua kategori sudah punya drawing terkunci, jadi bracket demo dilewati.");
+  }
+  render();
+}
+
+async function clearDemoData(){
+  const demoEntries = INDEX.filter(r=>r.isDemo);
+  for(const entry of demoEntries){
+    try{
+      await deleteDoc(doc(db,"registrations",entry.id));
+      await deleteDoc(doc(db,"index",entry.id));
+    }catch(e){ console.error(e); }
+  }
+  INDEX = INDEX.filter(r=>!r.isDemo);
+  demoEntries.forEach(e=>{ delete REG_CACHE[e.id]; });
+  if(META.settings.demoCategory){
+    const cat = catByCode(META.settings.demoCategory);
+    if(cat){
+      DRAWING[cat.code] = defaultDrawingFor(cat);
+      MATCHES[cat.code] = [];
+      SCHEDULE = SCHEDULE.filter(s=>s.category!==cat.code);
+      await saveDrawing(); await saveMatches(); await saveSchedule();
+    }
+    META.settings.demoCategory = null;
+    await saveMeta();
+  }
+  showToast("Semua data demo sudah dihapus.");
+  render();
 }
 
 function viewAdminSettings(){
@@ -2976,14 +3069,6 @@ function viewAdminSettings(){
   pinInput.addEventListener("change", async (e)=>{ META.settings.adminPin = e.target.value || META.settings.adminPin; await saveMeta(); showToast("Kode akses diperbarui."); });
   pinField.appendChild(pinInput);
   card.appendChild(pinField);
-
-  const refPinField = el("div",{class:"field"});
-  refPinField.appendChild(el("label",{},"Kode Akses Wasit"));
-  const refPinInput = el("input",{type:"text", value: META.settings.refereePin});
-  refPinInput.addEventListener("change", async (e)=>{ META.settings.refereePin = e.target.value || META.settings.refereePin; await saveMeta(); showToast("Kode wasit diperbarui."); });
-  refPinField.appendChild(refPinInput);
-  refPinField.appendChild(el("div",{class:"hint"},"Bagikan kode ini ke wasit/MC di lapangan, terpisah dari kode Admin."));
-  card.appendChild(refPinField);
 
   const targetField = el("div",{class:"field"});
   targetField.appendChild(el("label",{},"Target Skor (Race-to)"));
@@ -3004,6 +3089,25 @@ function viewAdminSettings(){
   card.appendChild(toggleRow);
   card.appendChild(el("div",{class:"flag info"},"Pengiriman WhatsApp di sini bersifat manual (membuka wa.me dengan pesan siap kirim) karena kredensial WhatsApp Business API perlu disimpan di server, bukan di aplikasi sisi klien ini — sesuai ketentuan addendum bahwa credential tidak boleh ditanam di source code."));
   sec.appendChild(card);
+
+  sec.appendChild(el("div",{class:"section-title", style:"margin-top:20px;"},"Mode Demo"));
+  const demoCard = el("div",{class:"card"});
+  demoCard.appendChild(el("div",{style:"font-size:12.5px;color:var(--ink-dim);margin-bottom:12px;"},"Isi data contoh (pendaftar di berbagai status, drawing, bracket, jadwal, bahkan 1 match yang sudah selesai) untuk didemokan ke tim tanpa perlu menunggu pendaftaran asli. Data ditandai [DEMO] dan bisa dihapus kapan saja."));
+  const demoRow = el("div",{style:"display:flex;gap:10px;"});
+  demoRow.appendChild(el("button",{class:"btn btn-gold btn-sm", style:"flex:1;", onclick:()=>openConfirm({
+    title:"Buat Data Demo?",
+    body:"Sistem akan membuat beberapa pendaftar contoh, mengunci drawing satu kategori yang belum dipakai, dan menyelesaikan satu match contoh. Aman dijalankan berkali-kali.",
+    confirmLabel:"Buat Demo",
+    onConfirm: seedDemoData
+  })},"Buat Data Demo"));
+  demoRow.appendChild(el("button",{class:"btn btn-outline btn-sm", style:"flex:1;", onclick:()=>openConfirm({
+    title:"Hapus Semua Data Demo?",
+    body:"Semua pendaftar bertanda [DEMO] beserta drawing/bracket/jadwal contohnya akan dihapus permanen. Data asli tidak akan tersentuh.",
+    confirmLabel:"Hapus Demo", danger:true,
+    onConfirm: clearDemoData
+  })},"Hapus Data Demo"));
+  demoCard.appendChild(demoRow);
+  sec.appendChild(demoCard);
 
   sec.appendChild(el("div",{class:"section-title", style:"margin-top:20px;"},"Kategori & Kuota"));
   const catCard = el("div",{class:"card"});
@@ -3079,10 +3183,9 @@ function render(){
     case "admin-matchcontrol": view = adminSession? viewAdminMatchControl() : viewAdminLogin(); break;
     case "admin-referee": view = adminSession? viewAdminReferee() : viewAdminLogin(); break;
     case "admin-finance": view = adminSession? viewAdminFinance() : viewAdminLogin(); break;
-    case "referee-login": view = refereeSession? viewRefereeList() : viewRefereeLogin(); break;
-    case "referee-list": view = refereeSession? viewRefereeList() : viewRefereeLogin(); break;
-    case "referee-setup": view = refereeSession? viewRefereeSetup(route.params) : viewRefereeLogin(); break;
-    case "referee-scoring": view = refereeSession? viewRefereeScoring(route.params) : viewRefereeLogin(); break;
+    case "admin-referee": view = adminSession? viewAdminReferee() : viewAdminLogin(); break;
+    case "admin-referee-setup": view = adminSession? viewAdminRefereeSetup(route.params) : viewAdminLogin(); break;
+    case "admin-referee-scoring": view = adminSession? viewAdminRefereeScoring(route.params) : viewAdminLogin(); break;
     case "admin-settings": view = adminSession? viewAdminSettings() : viewAdminLogin(); break;
     default: view = viewHome();
   }
