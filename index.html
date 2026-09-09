@@ -492,7 +492,7 @@ function normalizeWhatsapp(raw){
 
 function defaultMeta(){
   return {
-    settings: { adminPin: "SAKRAL2026", registrationOpen: true, whatsappEnabled: true, scoringTarget: 42 },
+    settings: { adminPin: "SAKRAL2026", registrationOpen: true, whatsappEnabled: true, scoringTarget: 42, refereeNames: [] },
     categories: DEFAULT_CATEGORIES.map(c => ({...c})),
     counters: {PRM:0, COR:0, RIS:0, QUE:0},
   };
@@ -507,6 +507,7 @@ async function loadMeta(){
       if(!META.settings) META.settings = d.settings;
       if(META.settings.whatsappEnabled===undefined) META.settings.whatsappEnabled = true;
       if(!META.settings.scoringTarget) META.settings.scoringTarget = d.settings.scoringTarget;
+      if(!META.settings.refereeNames) META.settings.refereeNames = [];
       if(!META.categories) META.categories = d.categories;
       if(!META.counters) META.counters = d.counters;
     } else { META = defaultMeta(); }
@@ -2821,10 +2822,17 @@ function viewAdminReferee(){
 
     const refField = el("div",{style:"display:flex;align-items:center;gap:8px;"});
     refField.appendChild(el("span",{style:"font-size:11px;color:var(--ink-faint);white-space:nowrap;"},"\ud83d\udc64 Wasit:"));
-    const refInput = el("input",{type:"text", placeholder:"Nama wasit bertugas", value: match.refereeName||"", style:"flex:1;background:var(--bg-elev);border:1px solid var(--line);border-radius:8px;padding:7px 10px;color:var(--ink);font-size:12.5px;"});
-    refInput.addEventListener("click",(e)=>e.stopPropagation());
-    refInput.addEventListener("change", async (e)=>{ match.refereeName = e.target.value; await saveMatches(); showToast("Wasit ditetapkan: "+(e.target.value||"-")); });
-    refField.appendChild(refInput);
+    const refSelect = el("select",{style:"flex:1;background:var(--bg-elev);border:1px solid var(--line);border-radius:8px;padding:7px 10px;color:var(--ink);font-size:12.5px;"});
+    refSelect.appendChild(el("option",{value:""},"\u2014 pilih wasit \u2014"));
+    (META.settings.refereeNames||[]).forEach(name=>{
+      refSelect.appendChild(el("option",{value:name, selected: match.refereeName===name?"selected":null}, name));
+    });
+    if(match.refereeName && !(META.settings.refereeNames||[]).includes(match.refereeName)){
+      refSelect.appendChild(el("option",{value:match.refereeName, selected:"selected"}, match.refereeName+" (tidak di daftar)"));
+    }
+    refSelect.addEventListener("click",(e)=>e.stopPropagation());
+    refSelect.addEventListener("change", async (e)=>{ match.refereeName = e.target.value; await saveMatches(); showToast("Wasit ditetapkan: "+(e.target.value||"-")); });
+    refField.appendChild(refSelect);
     row.appendChild(refField);
 
     sec.appendChild(row);
@@ -3086,6 +3094,9 @@ async function seedDemoData(){
   await persistReg(makeDemoReg(otherCat, "Kiki Amelia","Lina Marlina","WAITING_PAYMENT"));
   await persistReg(makeDemoReg(otherCat, "Made Wirawan","Nyoman Ardika","WAITING_VERIFICATION"));
 
+  if(!META.settings.refereeNames || META.settings.refereeNames.length===0){
+    META.settings.refereeNames = ["Contoh Wasit A","Contoh Wasit B"];
+  }
   if(demoCat && bracketPairs.length===4){
     const drawing = DRAWING[demoCat.code];
     bracketPairs.forEach((r,i)=>{ drawing.slots[i] = r.id; });
@@ -3096,7 +3107,7 @@ async function seedDemoData(){
     await generateDraftSchedule();
     const m1 = MATCHES[demoCat.code].find(m=>m.roundIndex===0 && m.sideA.participantId===bracketPairs[0].id);
     if(m1){
-      m1.refereeName = "Contoh Wasit";
+      m1.refereeName = META.settings.refereeNames[0];
       await saveMatches();
       await mcFinish(demoCat.code, m1, 42, 35, 2);
     }
@@ -3104,6 +3115,7 @@ async function seedDemoData(){
     await saveMeta();
     showToast("Data demo siap! Termasuk 1 match yang sudah selesai + 1 match live untuk didemokan.");
   } else {
+    await saveMeta();
     showToast("Data pendaftar demo dibuat. Semua kategori sudah punya drawing terkunci, jadi bracket demo dilewati.");
   }
   render();
@@ -3168,6 +3180,45 @@ function viewAdminSettings(){
   card.appendChild(toggleRow);
   card.appendChild(el("div",{class:"flag info"},"Pengiriman WhatsApp di sini bersifat manual (membuka wa.me dengan pesan siap kirim) karena kredensial WhatsApp Business API perlu disimpan di server, bukan di aplikasi sisi klien ini — sesuai ketentuan addendum bahwa credential tidak boleh ditanam di source code."));
   sec.appendChild(card);
+
+  sec.appendChild(el("div",{class:"section-title", style:"margin-top:20px;"},"Daftar Wasit"));
+  const refCard = el("div",{class:"card"});
+  refCard.appendChild(el("div",{style:"font-size:12.5px;color:var(--ink-dim);margin-bottom:12px;"},"Isi nama-nama wasit di sini supaya bisa dipilih lewat dropdown di tab Wasit, tidak perlu ketik manual tiap match."));
+  const refListWrap = el("div",{id:"referee-list-wrap"});
+  function renderRefList(){
+    refListWrap.innerHTML = "";
+    const names = META.settings.refereeNames||[];
+    if(names.length===0){
+      refListWrap.appendChild(el("div",{style:"font-size:12px;color:var(--ink-faint);margin-bottom:10px;"},"Belum ada wasit ditambahkan."));
+    }
+    names.forEach((name,idx)=>{
+      const row = el("div",{style:"display:flex;align-items:center;gap:8px;padding:7px 0;border-bottom:1px solid var(--line);"});
+      row.appendChild(el("div",{style:"flex:1;font-size:13px;font-weight:600;"}, name));
+      row.appendChild(el("button",{class:"btn btn-outline btn-xs", onclick: async ()=>{
+        META.settings.refereeNames = names.filter((_,i)=>i!==idx);
+        await saveMeta();
+        renderRefList();
+        showToast("Wasit dihapus dari daftar.");
+      }},"Hapus"));
+      refListWrap.appendChild(row);
+    });
+  }
+  renderRefList();
+  refCard.appendChild(refListWrap);
+  const addRow = el("div",{style:"display:flex;gap:8px;margin-top:10px;"});
+  const addInput = el("input",{type:"text", placeholder:"Nama wasit baru", style:"flex:1;background:var(--bg-elev);border:1px solid var(--line);border-radius:9px;padding:10px;color:var(--ink);"});
+  addRow.appendChild(addInput);
+  addRow.appendChild(el("button",{class:"btn btn-gold btn-sm", onclick: async ()=>{
+    const val = addInput.value.trim();
+    if(!val){ showToast("Isi nama wasit dulu."); return; }
+    META.settings.refereeNames = [...(META.settings.refereeNames||[]), val];
+    await saveMeta();
+    addInput.value = "";
+    renderRefList();
+    showToast("Wasit ditambahkan.");
+  }},"Tambah"));
+  refCard.appendChild(addRow);
+  sec.appendChild(refCard);
 
   sec.appendChild(el("div",{class:"section-title", style:"margin-top:20px;"},"Mode Demo"));
   const demoCard = el("div",{class:"card"});
