@@ -395,7 +395,8 @@ const GENERAL_RULES = [
   "Panitia berhak melakukan validasi ulang di lokasi pertandingan.",
   "Apabila kemampuan/level pemain saat bertanding dinilai tidak sesuai kategori, panitia berhak mendiskualifikasi peserta.",
   "Keputusan panitia terkait validasi level pemain bersifat final.",
-  "Jika didiskualifikasi karena data atau level tidak sesuai kategori, uang pendaftaran tidak dikembalikan."
+  "Jika didiskualifikasi karena data atau level tidak sesuai kategori, uang pendaftaran tidak dikembalikan.",
+  "Deposit kok Rp50.000/pasangan dikumpulkan tunai oleh panitia saat hari-H, terpisah dari pembayaran registrasi online."
 ];
 
 const CATEGORY_RULES = {
@@ -528,6 +529,30 @@ async function saveIndex(){
     await Promise.all(INDEX.map(s=> setDoc(doc(db,"index",s.id), s)));
     return true;
   }catch(e){ console.error(e); showToast("Gagal menyimpan indeks pendaftar."); return false; }
+}
+
+/* ============ EXPENSES (Pengeluaran) ============ */
+let EXPENSES = [];
+async function loadExpenses(){
+  try{
+    const snap = await getDocs(collection(db,"expenses"));
+    EXPENSES = snap.docs.map(d=>d.data()).sort((a,b)=> (b.createdAt||"").localeCompare(a.createdAt||""));
+  }catch(e){ console.error(e); EXPENSES = []; }
+}
+async function addExpense(description, amount){
+  const exp = { id: uid(), description, amount, createdAt: nowIso() };
+  try{
+    await setDoc(doc(db,"expenses",exp.id), exp);
+    EXPENSES.unshift(exp);
+    return true;
+  }catch(e){ console.error(e); showToast("Gagal menyimpan pengeluaran."); return false; }
+}
+async function removeExpense(id){
+  try{
+    await deleteDoc(doc(db,"expenses",id));
+    EXPENSES = EXPENSES.filter(e=>e.id!==id);
+    return true;
+  }catch(e){ console.error(e); showToast("Gagal menghapus pengeluaran."); return false; }
 }
 
 /* ============ PHASE 2 STATE: DRAWING / MATCHES / SCHEDULE ============ */
@@ -707,6 +732,7 @@ function indexSummary(reg){
     paymentAmountDue: reg.payment ? reg.payment.amountDue : 0,
     paymentAmountPaid: reg.payment ? reg.payment.amountPaid : 0,
     paymentStatus: reg.payment ? reg.payment.status : "UNPAID",
+    paymentMethod: reg.payment ? (reg.payment.method||"TRANSFER") : "TRANSFER",
     depositInitial: reg.deposit ? reg.deposit.initial : 0,
     depositBalance: reg.deposit ? reg.deposit.balance : 0,
     isDemo: !!reg.isDemo,
@@ -1157,7 +1183,7 @@ async function submitRegistration(){
     adminNote: "",
     createdAt: nowT,
     updatedAt: nowT,
-    payment: { amountDue: cat.fee + DEPOSIT_FEE, amountPaid: 0, senderName:"", proofDataUrl:"", status:"UNPAID", verifiedBy:"", verifiedAt:"" },
+    payment: { method:"TRANSFER", amountDue: cat.fee, amountPaid: 0, senderName:"", proofDataUrl:"", status:"UNPAID", verifiedBy:"", verifiedAt:"" },
     participant: null,
     deposit: null,
     notifications: [],
@@ -1193,8 +1219,16 @@ function viewSuccess(params){
 /* ============ VIEW: STATUS LOOKUP ============ */
 let statusLookupValue = "";
 let statusFoundId = null;
+function lookupStatusByRegNo(no){
+  const s = findSummaryByNo(no);
+  return s ? s.id : "notfound";
+}
 function viewStatus(params){
-  if(params && params.regNo){ statusLookupValue = params.regNo; statusFoundId = null; }
+  if(params && params.regNo){
+    statusLookupValue = params.regNo;
+    statusFoundId = lookupStatusByRegNo(params.regNo);
+    params.regNo = null; // consume so later re-renders on this route don't reset the result
+  }
   const wrap = el("div",{});
   wrap.appendChild(topbar("status"));
   wrap.appendChild(backRow(()=>nav("home")));
@@ -1223,8 +1257,7 @@ function viewStatus(params){
   return wrap;
 }
 function doStatusLookup(){
-  const s = findSummaryByNo(statusLookupValue);
-  statusFoundId = s ? s.id : "notfound";
+  statusFoundId = lookupStatusByRegNo(statusLookupValue);
   render();
 }
 
@@ -1260,8 +1293,12 @@ function renderRegistrationStatusCard(reg){
   } else if(reg.status==="REGISTERED"){
     const c2 = el("div",{class:"card", style:"margin-top:12px;"});
     c2.appendChild(el("div",{style:"font-weight:800;font-size:13.5px;margin-bottom:8px;"},"Peserta Resmi \u2014 Info Deposit Kok"));
-    c2.appendChild(el("div",{class:"kv"},[el("span",{class:"k"},"Deposit Awal"),el("span",{class:"v"},rupiah(reg.deposit.initial))]));
-    c2.appendChild(el("div",{class:"kv"},[el("span",{class:"k"},"Sisa Deposit"),el("span",{class:"v"},rupiah(reg.deposit.balance))]));
+    if(reg.deposit){
+      c2.appendChild(el("div",{class:"kv"},[el("span",{class:"k"},"Deposit Awal"),el("span",{class:"v"},rupiah(reg.deposit.initial))]));
+      c2.appendChild(el("div",{class:"kv"},[el("span",{class:"k"},"Sisa Deposit"),el("span",{class:"v"},rupiah(reg.deposit.balance))]));
+    } else {
+      c2.appendChild(el("div",{class:"kv"},[el("span",{class:"k"},"Deposit Kok"),el("span",{class:"v"},"Rp"+DEPOSIT_FEE.toLocaleString("id-ID")+" tunai saat hari-H")]));
+    }
     s2.appendChild(c2);
   } else if(reg.status==="CANCELLED"){
     s2.appendChild(el("div",{class:"flag", style:"margin-top:12px;"},"Pendaftaran ini telah dibatalkan."));
@@ -1276,14 +1313,14 @@ function categoryConfirmCard(reg){
   c.appendChild(el("div",{style:"font-weight:800;font-size:13.5px;margin-bottom:8px;"},"Panitia Mengusulkan Perubahan Kategori"));
   c.appendChild(el("div",{class:"kv"},[el("span",{class:"k"},"Kategori Semula"),el("span",{class:"v"},oldCat.name)]));
   c.appendChild(el("div",{class:"kv"},[el("span",{class:"k"},"Kategori Baru"),el("span",{class:"v", style:`color:var(${newCat.accentVar})`},newCat.name)]));
-  c.appendChild(el("div",{class:"kv"},[el("span",{class:"k"},"Total Pembayaran Baru"),el("span",{class:"v"},rupiah(newCat.fee+DEPOSIT_FEE))]));
+  c.appendChild(el("div",{class:"kv"},[el("span",{class:"k"},"Total Pembayaran Baru"),el("span",{class:"v"},rupiah(newCat.fee))]));
   if(reg.adminNote) c.appendChild(el("div",{class:"flag info", style:"margin-top:8px;"},"Catatan panitia: "+reg.adminNote));
   c.appendChild(renderRulesPanel(reg.pendingCategory));
   c.appendChild(el("button",{class:"btn btn-gold btn-block", onclick: async ()=>{
     const full = isQuotaFull(reg.pendingCategory);
     reg.category = reg.pendingCategory;
     reg.pendingCategory = null;
-    reg.payment.amountDue = newCat.fee + DEPOSIT_FEE;
+    reg.payment.amountDue = newCat.fee;
     reg.status = full ? "WAITING_LIST" : "WAITING_PAYMENT";
     const ok = await persistReg(reg);
     if(ok){ showToast("Kategori dikonfirmasi."); render(); }
@@ -1375,64 +1412,95 @@ function paymentUploadCard(reg){
   const cat = catByCode(reg.category);
   const c = el("div",{class:"card", style:"margin-top:12px;"});
   c.appendChild(el("div",{style:"font-weight:800;font-size:13.5px;margin-bottom:8px;"},"Instruksi Pembayaran"));
-  c.appendChild(el("div",{class:"kv"},[el("span",{class:"k"},"Biaya Registrasi"),el("span",{class:"v"},rupiah(cat.fee))]));
-  c.appendChild(el("div",{class:"kv"},[el("span",{class:"k"},"Deposit Kok"),el("span",{class:"v"},rupiah(DEPOSIT_FEE))]));
-  c.appendChild(el("div",{class:"kv"},[el("span",{class:"k"},"Total Dibayar"),el("span",{class:"v", style:"color:var(--gold-bright);"},rupiah(reg.payment.amountDue))]));
-  c.appendChild(el("div",{class:"flag", style:"margin-top:10px;"},"Transfer ke rekening/QRIS panitia (dikonfirmasi via WhatsApp), lalu isi bukti pembayaran di bawah."));
+  c.appendChild(el("div",{class:"kv"},[el("span",{class:"k"},"Biaya Registrasi"),el("span",{class:"v", style:"color:var(--gold-bright);"},rupiah(reg.payment.amountDue))]));
+  c.appendChild(el("div",{class:"flag info"},"Deposit kok Rp"+DEPOSIT_FEE.toLocaleString("id-ID")+"/pasangan dikumpulkan tunai terpisah oleh panitia saat hari-H, bukan bagian dari pembayaran ini."));
 
-  const form = el("div",{style:"margin-top:8px;"});
-  let localAmount = reg.payment.amountPaid || "";
-  let localSender = reg.payment.senderName || "";
-  let localProof = reg.payment.proofDataUrl || "";
+  let method = reg.payment.method || "TRANSFER";
+  const methodField = el("div",{class:"field"});
+  methodField.appendChild(el("label",{},"Metode Pembayaran"));
+  const seg = el("div",{class:"seg"});
+  const btnTransfer = el("button",{class: method==="TRANSFER"?"active":"", type:"button"},"Transfer / QRIS");
+  const btnCash = el("button",{class: method==="CASH"?"active":"", type:"button"},"Tunai di Tempat");
+  seg.appendChild(btnTransfer); seg.appendChild(btnCash);
+  methodField.appendChild(seg);
+  c.appendChild(methodField);
 
-  const amtField = el("div",{class:"field"});
-  amtField.appendChild(el("label",{},"Nominal Transfer"));
-  const amtInput = el("input",{type:"number", placeholder:"contoh: 300000", value: localAmount});
-  amtInput.addEventListener("input",(e)=>{ localAmount = e.target.value; });
-  amtField.appendChild(amtInput);
-  form.appendChild(amtField);
+  const formArea = el("div",{});
+  c.appendChild(formArea);
 
-  const senderField = el("div",{class:"field"});
-  senderField.appendChild(el("label",{},"Nama Pengirim"));
-  const senderInput = el("input",{type:"text", placeholder:"Nama di rekening pengirim", value: localSender});
-  senderInput.addEventListener("input",(e)=>{ localSender = e.target.value; });
-  senderField.appendChild(senderInput);
-  form.appendChild(senderField);
+  function renderForm(){
+    formArea.innerHTML = "";
+    if(method==="TRANSFER"){
+      formArea.appendChild(el("div",{class:"flag", style:"margin-bottom:10px;"},"Transfer ke rekening/QRIS panitia (dikonfirmasi via WhatsApp), lalu isi bukti pembayaran di bawah."));
+      let localAmount = reg.payment.amountPaid || "";
+      let localSender = reg.payment.senderName || "";
+      let localProof = reg.payment.proofDataUrl || "";
 
-  const proofField = el("div",{class:"field"});
-  proofField.appendChild(el("label",{},"Bukti Pembayaran"));
-  const drop = el("div",{class:"file-drop"},[localProof? "Ganti file" : "Tap untuk pilih foto bukti transfer"]);
-  if(localProof){ drop.appendChild(el("img",{src:localProof})); }
-  const fileInput = el("input",{type:"file", accept:"image/*", style:"display:none;"});
-  fileInput.addEventListener("change", async (e)=>{
-    const file = e.target.files[0];
-    if(!file) return;
-    try{
-      localProof = await resizeImageFile(file, 640);
-      showToast("Bukti pembayaran dipilih.");
-    }catch(err){ showToast("Gagal memproses gambar."); }
-  });
-  drop.addEventListener("click", ()=> fileInput.click());
-  proofField.appendChild(drop);
-  proofField.appendChild(fileInput);
-  form.appendChild(proofField);
+      const amtField = el("div",{class:"field"});
+      amtField.appendChild(el("label",{},"Nominal Transfer"));
+      const amtInput = el("input",{type:"number", placeholder:"contoh: 300000", value: localAmount});
+      amtInput.addEventListener("input",(e)=>{ localAmount = e.target.value; });
+      amtField.appendChild(amtInput);
+      formArea.appendChild(amtField);
 
-  form.appendChild(el("button",{class:"btn btn-gold btn-block", onclick: async ()=>{
-    if(!localAmount || !localSender || !localProof){
-      showToast("Lengkapi nominal, nama pengirim, dan bukti pembayaran.");
-      return;
+      const senderField = el("div",{class:"field"});
+      senderField.appendChild(el("label",{},"Nama Pengirim"));
+      const senderInput = el("input",{type:"text", placeholder:"Nama di rekening pengirim", value: localSender});
+      senderInput.addEventListener("input",(e)=>{ localSender = e.target.value; });
+      senderField.appendChild(senderInput);
+      formArea.appendChild(senderField);
+
+      const proofField = el("div",{class:"field"});
+      proofField.appendChild(el("label",{},"Bukti Pembayaran"));
+      const drop = el("div",{class:"file-drop"},[localProof? "Ganti file" : "Tap untuk pilih foto bukti transfer"]);
+      if(localProof){ drop.appendChild(el("img",{src:localProof})); }
+      const fileInput = el("input",{type:"file", accept:"image/*", style:"display:none;"});
+      fileInput.addEventListener("change", async (e)=>{
+        const file = e.target.files[0];
+        if(!file) return;
+        try{
+          localProof = await resizeImageFile(file, 640);
+          showToast("Bukti pembayaran dipilih.");
+        }catch(err){ showToast("Gagal memproses gambar."); }
+      });
+      drop.addEventListener("click", ()=> fileInput.click());
+      proofField.appendChild(drop);
+      proofField.appendChild(fileInput);
+      formArea.appendChild(proofField);
+
+      formArea.appendChild(el("button",{class:"btn btn-gold btn-block", onclick: async ()=>{
+        if(!localAmount || !localSender || !localProof){
+          showToast("Lengkapi nominal, nama pengirim, dan bukti pembayaran.");
+          return;
+        }
+        reg.payment.method = "TRANSFER";
+        reg.payment.amountPaid = Number(localAmount);
+        reg.payment.senderName = localSender;
+        reg.payment.proofDataUrl = localProof;
+        reg.payment.status = "WAITING_VERIFICATION";
+        reg.status = "WAITING_VERIFICATION";
+        pushNotification(reg, "PAYMENT_PROOF_SUBMITTED");
+        const ok = await persistReg(reg);
+        if(ok){ showToast("Bukti pembayaran terkirim. Menunggu verifikasi."); render(); }
+      }},"Kirim Bukti Pembayaran"));
+    } else {
+      formArea.appendChild(el("div",{class:"flag", style:"margin-bottom:10px;"},"Bayar langsung ke panitia di sekretariat/venue sejumlah "+rupiah(reg.payment.amountDue)+", lalu tap tombol di bawah setelah membayar. Panitia akan konfirmasi penerimaan."));
+      formArea.appendChild(el("button",{class:"btn btn-gold btn-block", onclick: async ()=>{
+        reg.payment.method = "CASH";
+        reg.payment.amountPaid = reg.payment.amountDue;
+        reg.payment.senderName = reg.player1;
+        reg.payment.status = "WAITING_VERIFICATION";
+        reg.status = "WAITING_VERIFICATION";
+        pushNotification(reg, "PAYMENT_PROOF_SUBMITTED");
+        const ok = await persistReg(reg);
+        if(ok){ showToast("Konfirmasi tunai terkirim. Menunggu verifikasi panitia."); render(); }
+      }},"Saya Sudah Bayar Tunai ke Panitia"));
     }
-    reg.payment.amountPaid = Number(localAmount);
-    reg.payment.senderName = localSender;
-    reg.payment.proofDataUrl = localProof;
-    reg.payment.status = "WAITING_VERIFICATION";
-    reg.status = "WAITING_VERIFICATION";
-    pushNotification(reg, "PAYMENT_PROOF_SUBMITTED");
-    const ok = await persistReg(reg);
-    if(ok){ showToast("Bukti pembayaran terkirim. Menunggu verifikasi."); render(); }
-  }},"Kirim Bukti Pembayaran"));
+  }
+  btnTransfer.addEventListener("click", ()=>{ method="TRANSFER"; btnTransfer.className="active"; btnCash.className=""; renderForm(); });
+  btnCash.addEventListener("click", ()=>{ method="CASH"; btnCash.className="active"; btnTransfer.className=""; renderForm(); });
+  renderForm();
 
-  c.appendChild(form);
   return c;
 }
 
@@ -1561,7 +1629,7 @@ function viewAdminLogin(){
   const wrap = el("div",{});
   wrap.appendChild(topbar("admin"));
   const pw = el("div",{class:"pin-wrap"});
-  pw.appendChild(el("img",{class:"badge-shield", src:LOGO_ACADEMY, alt:"Sakral Academy"}));
+  pw.appendChild(el("img",{class:"badge-shield", src:LOGO_PBSAKRAL, alt:"PB Sakral"}));
   pw.appendChild(el("h2",{style:"font-size:20px;margin:0 0 6px;"},"Akses Panitia"));
   pw.appendChild(el("div",{style:"color:var(--ink-dim);font-size:13px;margin-bottom:18px;"},"Masukkan kode akses admin untuk membuka dashboard."));
   const input = el("input",{type:"text", placeholder:"Kode akses", style:"width:100%;background:var(--bg-elev);border:1px solid var(--line);border-radius:10px;padding:12px;color:var(--ink);font-size:14.5px;text-align:center;margin-bottom:12px;"});
@@ -1808,10 +1876,11 @@ function viewAdminDetail(params){
   // Payment card
   const payCard = el("div",{class:"card"});
   payCard.appendChild(el("div",{style:"font-weight:800;font-size:13.5px;margin-bottom:8px;"},"Pembayaran"));
+  payCard.appendChild(el("div",{class:"kv"},[el("span",{class:"k"},"Metode"),el("span",{class:"v"}, reg.payment.method==="CASH" ? "\ud83d\udcb5 Tunai di Tempat" : "\ud83c\udfe6 Transfer/QRIS")]));
   payCard.appendChild(el("div",{class:"kv"},[el("span",{class:"k"},"Jumlah Ditagih"),el("span",{class:"v"},rupiah(reg.payment.amountDue))]));
   if(reg.payment.amountPaid){
-    payCard.appendChild(el("div",{class:"kv"},[el("span",{class:"k"},"Nominal Transfer"),el("span",{class:"v", style: reg.payment.amountPaid!==reg.payment.amountDue? "color:var(--warn)":""},rupiah(reg.payment.amountPaid))]));
-    payCard.appendChild(el("div",{class:"kv"},[el("span",{class:"k"},"Nama Pengirim"),el("span",{class:"v"},reg.payment.senderName)]));
+    payCard.appendChild(el("div",{class:"kv"},[el("span",{class:"k"}, reg.payment.method==="CASH"?"Nominal Diterima":"Nominal Transfer"),el("span",{class:"v", style: reg.payment.amountPaid!==reg.payment.amountDue? "color:var(--warn)":""},rupiah(reg.payment.amountPaid))]));
+    payCard.appendChild(el("div",{class:"kv"},[el("span",{class:"k"}, reg.payment.method==="CASH"?"Nama Peserta":"Nama Pengirim"),el("span",{class:"v"},reg.payment.senderName)]));
   }
   if(reg.payment.amountPaid && reg.payment.amountPaid !== reg.payment.amountDue){
     payCard.appendChild(el("div",{class:"flag", style:"margin-top:8px;"},"Nominal tidak sesuai tagihan. Periksa sebelum verifikasi."));
@@ -1891,6 +1960,25 @@ function viewAdminDetail(params){
     actions.appendChild(el("div",{class:"flag warn"},"Menunggu peserta melengkapi data. Catatan: " + (reg.adminNote||"-")));
   } else if(reg.status==="WAITING_PAYMENT"){
     actions.appendChild(el("div",{class:"flag info"},"Menunggu peserta mengunggah bukti pembayaran."));
+    actions.appendChild(el("button",{class:"btn btn-gold btn-block", style:"margin-top:8px;", onclick:()=>openConfirm({
+      title:"Terima Tunai & Registrasi Langsung?",
+      body:"Gunakan ini kalau pasangan bayar tunai langsung ke panitia di tempat ("+rupiah(reg.payment.amountDue)+"). Peserta akan langsung resmi terdaftar tanpa perlu verifikasi terpisah.",
+      confirmLabel:"Terima & Registrasi",
+      onConfirm: async ()=>{
+        reg.payment.method = "CASH";
+        reg.payment.amountPaid = reg.payment.amountDue;
+        reg.payment.senderName = reg.player1;
+        reg.payment.status = "PAID";
+        reg.payment.verifiedBy = "Admin (tunai di tempat)";
+        reg.payment.verifiedAt = nowIso();
+        reg.status = "REGISTERED";
+        reg.participant = { createdAt: nowIso() };
+        pushNotification(reg, "PAYMENT_VERIFIED");
+        await persistReg(reg);
+        showToast("Peserta resmi terdaftar (tunai).");
+        render();
+      }
+    })},"\ud83d\udcb5 Terima Tunai & Registrasi Langsung"));
     const row2 = el("div",{style:"display:flex;gap:8px;flex-wrap:wrap;margin-top:8px;"});
     row2.appendChild(el("button",{class:"btn btn-outline btn-sm", onclick:()=>{ revisionRequestModal=true; revisionPrefill=""; render(); }},"Minta Data Tambahan"));
     if(!(reg.verificationVideo && reg.verificationVideo.value)){
@@ -1901,7 +1989,7 @@ function viewAdminDetail(params){
     const row = el("div",{style:"display:flex;gap:10px;"});
     row.appendChild(el("button",{class:"btn btn-ok", style:"flex:1;", onclick:()=>openConfirm({
       title:"Verifikasi Pembayaran?",
-      body:"Participant dan deposit kok Rp50.000 akan dibuat otomatis.",
+      body:"Peserta akan resmi terdaftar. Deposit kok dikumpulkan terpisah secara tunai saat hari-H.",
       confirmLabel:"Verifikasi",
       onConfirm: async ()=>{
         reg.status="REGISTERED";
@@ -1909,8 +1997,6 @@ function viewAdminDetail(params){
         reg.payment.verifiedBy="Admin";
         reg.payment.verifiedAt=nowIso();
         reg.participant = { createdAt: nowIso() };
-        reg.deposit = { initial: DEPOSIT_FEE, balance: DEPOSIT_FEE };
-        reg.depositTransactions = [];
         pushNotification(reg, "PAYMENT_VERIFIED");
         await persistReg(reg);
         showToast("Pembayaran diverifikasi. Peserta resmi dibuat.");
@@ -1944,7 +2030,23 @@ function viewAdminDetail(params){
       }
     })}, full? "Kuota masih penuh" : "Promote ke Menunggu Pembayaran"));
   } else if(reg.status==="REGISTERED"){
-    actions.appendChild(el("div",{class:"kv"},[el("span",{class:"k"},"Sisa Deposit"),el("span",{class:"v"},rupiah(reg.deposit.balance))]));
+    if(reg.deposit){
+      actions.appendChild(el("div",{class:"kv"},[el("span",{class:"k"},"Sisa Deposit"),el("span",{class:"v"},rupiah(reg.deposit.balance))]));
+    } else {
+      actions.appendChild(el("div",{class:"flag warn"},"Deposit kok belum diterima. Kumpulkan Rp"+DEPOSIT_FEE.toLocaleString("id-ID")+" tunai dari pasangan ini saat hari-H."));
+      actions.appendChild(el("button",{class:"btn btn-gold btn-block", onclick:()=>openConfirm({
+        title:"Terima Deposit Kok?",
+        body:"Konfirmasi bahwa panitia sudah menerima Rp"+DEPOSIT_FEE.toLocaleString("id-ID")+" tunai dari pasangan ini.",
+        confirmLabel:"Sudah Diterima",
+        onConfirm: async ()=>{
+          reg.deposit = { initial: DEPOSIT_FEE, balance: DEPOSIT_FEE };
+          reg.depositTransactions = [];
+          await persistReg(reg);
+          showToast("Deposit kok tercatat.");
+          render();
+        }
+      })},"Terima Deposit Kok (Rp"+DEPOSIT_FEE.toLocaleString("id-ID")+")"));
+    }
     actions.appendChild(el("button",{class:"btn btn-outline btn-block", style:"margin-top:10px;", onclick:()=>openConfirm({
       title:"Batalkan Peserta?",
       body:"Peserta akan ditandai dibatalkan. Refund/adjustment deposit dilakukan manual di luar sistem ini.",
@@ -2747,31 +2849,87 @@ function viewAdminFinance(){
   wrap.appendChild(topbar("admin"));
   const sec = el("div",{class:"section"});
   sec.appendChild(adminTabs("admin-finance"));
-  sec.appendChild(el("div",{class:"section-title"},"Rekap Keuangan Peserta"));
+  sec.appendChild(el("div",{class:"section-title"},"Rekap Pemasukan Registrasi"));
 
   const registeredList = INDEX.filter(r=>r.status==="REGISTERED");
-  const totalPayment = registeredList.reduce((s,r)=>s+(r.paymentAmountPaid||0),0);
+  const cashIncome = registeredList.filter(r=>r.paymentMethod==="CASH").reduce((s,r)=>s+(r.paymentAmountPaid||0),0);
+  const transferIncome = registeredList.filter(r=>r.paymentMethod!=="CASH").reduce((s,r)=>s+(r.paymentAmountPaid||0),0);
+  const totalPayment = cashIncome + transferIncome;
+  const grid = el("div",{class:"stat-grid"});
+  grid.appendChild(statCard("\ud83d\udcb5 Pemasukan Tunai", rupiah(cashIncome), true));
+  grid.appendChild(statCard("\ud83c\udfe6 Pemasukan Transfer", rupiah(transferIncome), true));
+  grid.appendChild(statCard("Total Pemasukan Registrasi", rupiah(totalPayment), true));
+  grid.appendChild(statCard("Jumlah Peserta Resmi", registeredList.length));
+  sec.appendChild(grid);
+
+  sec.appendChild(el("div",{class:"section-title", style:"margin-top:22px;"},"Rekap Deposit Kok"));
   const depositCollected = registeredList.reduce((s,r)=>s+(r.depositInitial||0),0);
   const depositUsage = registeredList.reduce((s,r)=>s+((r.depositInitial||0)-(r.depositBalance||0)),0);
-  const grid = el("div",{class:"stat-grid"});
-  grid.appendChild(statCard("Total Pembayaran Registrasi", rupiah(totalPayment), true));
-  grid.appendChild(statCard("Deposit Terkumpul", rupiah(depositCollected), true));
-  grid.appendChild(statCard("Pemakaian Deposit", rupiah(depositUsage), true));
-  grid.appendChild(statCard("Sisa Deposit", rupiah(depositCollected-depositUsage), true));
-  sec.appendChild(grid);
+  const depGrid = el("div",{class:"stat-grid"});
+  depGrid.appendChild(statCard("Deposit Terkumpul", rupiah(depositCollected), true));
+  depGrid.appendChild(statCard("Pemakaian Deposit", rupiah(depositUsage), true));
+  depGrid.appendChild(statCard("Sisa Deposit", rupiah(depositCollected-depositUsage), true));
+  sec.appendChild(depGrid);
+
+  sec.appendChild(el("div",{class:"section-title", style:"margin-top:22px;"},"Rekap Pengeluaran"));
+  const totalExpense = EXPENSES.reduce((s,e)=>s+(e.amount||0),0);
+  const expGrid = el("div",{class:"stat-grid"});
+  expGrid.appendChild(statCard("Total Pengeluaran", rupiah(totalExpense), true));
+  expGrid.appendChild(statCard("Saldo Kas Tunai (Estimasi)", rupiah(cashIncome-totalExpense), true));
+  sec.appendChild(expGrid);
+  sec.appendChild(el("div",{class:"hint", style:"margin-top:6px;color:var(--ink-faint);font-size:11px;"},"Saldo Kas Tunai = Pemasukan Tunai \u2013 Pengeluaran. Belum menghitung deposit kok yang masih dipegang panitia."));
+
+  const expCard = el("div",{class:"card", style:"margin-top:14px;"});
+  let expDesc = "", expAmount = "";
+  const addRow = el("div",{style:"display:flex;gap:8px;margin-bottom:12px;"});
+  const descInput = el("input",{type:"text", placeholder:"Keterangan (contoh: beli kok, sewa venue)", style:"flex:2;background:var(--bg-elev);border:1px solid var(--line);border-radius:9px;padding:10px;color:var(--ink);"});
+  descInput.addEventListener("input",(e)=>{ expDesc = e.target.value; });
+  const amountInput = el("input",{type:"number", placeholder:"Nominal", style:"flex:1;background:var(--bg-elev);border:1px solid var(--line);border-radius:9px;padding:10px;color:var(--ink);"});
+  amountInput.addEventListener("input",(e)=>{ expAmount = e.target.value; });
+  addRow.appendChild(descInput); addRow.appendChild(amountInput);
+  expCard.appendChild(addRow);
+  expCard.appendChild(el("button",{class:"btn btn-gold btn-block", onclick: async ()=>{
+    const amt = Number(expAmount);
+    if(!expDesc.trim() || !amt || amt<=0){ showToast("Isi keterangan dan nominal yang valid."); return; }
+    const ok = await addExpense(expDesc.trim(), amt);
+    if(ok){ showToast("Pengeluaran dicatat."); render(); }
+  }},"+ Catat Pengeluaran"));
+  sec.appendChild(expCard);
+
+  if(EXPENSES.length===0){
+    sec.appendChild(el("div",{class:"empty"},"Belum ada pengeluaran dicatat."));
+  } else {
+    EXPENSES.forEach(e=>{
+      const row = el("div",{class:"fin-row"});
+      row.appendChild(el("div",{},[
+        el("div",{class:"fr-name"}, e.description),
+        el("div",{class:"fr-sub"}, fmtDate(e.createdAt))
+      ]));
+      const right = el("div",{style:"display:flex;align-items:center;gap:10px;"});
+      right.appendChild(el("div",{class:"fr-balance"}, rupiah(e.amount)));
+      right.appendChild(el("button",{class:"btn btn-outline btn-xs", onclick:()=>openConfirm({
+        title:"Hapus Pengeluaran?",
+        body:"\""+e.description+"\" ("+rupiah(e.amount)+") akan dihapus dari catatan.",
+        confirmLabel:"Hapus", danger:true,
+        onConfirm: async ()=>{ const ok = await removeExpense(e.id); if(ok){ showToast("Pengeluaran dihapus."); render(); } }
+      })},"Hapus"));
+      row.appendChild(right);
+      sec.appendChild(row);
+    });
+  }
 
   sec.appendChild(el("div",{class:"section-title", style:"margin-top:22px;"},"Per Peserta"));
   if(registeredList.length===0){
     sec.appendChild(el("div",{class:"empty"},"Belum ada peserta resmi."));
   } else {
-    registeredList.sort((a,b)=>a.regNo.localeCompare(b.regNo)).forEach(r=>{
+    registeredList.slice().sort((a,b)=>a.regNo.localeCompare(b.regNo)).forEach(r=>{
       const cat = catByCode(r.category);
       const row = el("div",{class:"fin-row"});
       row.appendChild(el("div",{},[
         el("div",{class:"fr-name"}, r.player1+" / "+r.player2),
-        el("div",{class:"fr-sub"}, r.regNo+" \u00b7 "+cat.name+" \u00b7 Bayar "+rupiah(r.paymentAmountPaid))
+        el("div",{class:"fr-sub"}, r.regNo+" \u00b7 "+cat.name+" \u00b7 "+(r.paymentMethod==="CASH"?"\ud83d\udcb5 Tunai":"\ud83c\udfe6 Transfer")+" "+rupiah(r.paymentAmountPaid))
       ]));
-      row.appendChild(el("div",{class:"fr-balance"}, rupiah(r.depositBalance)));
+      row.appendChild(el("div",{class:"fr-balance"}, r.depositInitial ? rupiah(r.depositBalance) : "\u2014"));
       sec.appendChild(row);
     });
   }
@@ -3056,7 +3214,7 @@ function makeDemoReg(cat, p1, p2, status){
     verificationVideo: { type:"link", value:"" },
     rulesAccepted: true, rulesAcceptedAt: nowT, categoryRulesVersion: CATEGORY_RULES_VERSION,
     status, adminNote: "", createdAt: nowT, updatedAt: nowT,
-    payment: { amountDue: cat.fee+DEPOSIT_FEE, amountPaid: 0, senderName:"", proofDataUrl:"", status:"UNPAID", verifiedBy:"", verifiedAt:"" },
+    payment: { method:"TRANSFER", amountDue: cat.fee, amountPaid: 0, senderName:"", proofDataUrl:"", status:"UNPAID", verifiedBy:"", verifiedAt:"" },
     participant: null, deposit: null, notifications: [], isDemo: true,
   };
   if(status==="WAITING_PAYMENT" || status==="WAITING_VERIFICATION" || status==="REGISTERED"){
@@ -3333,6 +3491,7 @@ function render(){
   await loadMeta();
   await loadIndex();
   await loadPhase2();
+  await loadExpenses();
   ready = true;
   const urlParams = new URLSearchParams(location.search);
   const regParam = urlParams.get("reg");
