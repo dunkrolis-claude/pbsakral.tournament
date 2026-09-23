@@ -796,7 +796,7 @@ function buildMessage(type, reg, extra){
     case "REGISTRATION_SUBMITTED":
       return `PB SAKRAL TOURNAMENT 2026\nPendaftaran ${reg.regNo} atas nama ${pairName} telah kami terima. Status saat ini: Menunggu Validasi Panitia.\nCek status: ${statusLink}`;
     case "REGISTRATION_ACCEPTED":
-      return `Pendaftaran Anda untuk kategori ${cat.name.toUpperCase()} telah DISETUJUI oleh panitia PB Sakral Tournament 2026.\n\nSilakan melakukan pembayaran registrasi sebesar:\n\nRp${reg.payment.amountDue.toLocaleString("id-ID")} / pasangan\n\nTransfer ke:\n${cat.bankName||"(bank belum diatur)"}\n${cat.bankAccount||"(nomor rekening belum diatur)"}\na.n. ${cat.bankHolder||"(nama pemilik belum diatur)"}\n\nMohon tuliskan pada deskripsi transfer:\n${cat.code} - Nama Pasangan\n\nContoh:\n${cat.code} - Hendrik/Irwan\n\nSetelah transfer, mohon kirim bukti pembayaran ke WhatsApp ini untuk diproses panitia.`;
+      return `Halo ${pairName},\n\nPendaftaran Anda untuk kategori ${cat.name.toUpperCase()} telah DISETUJUI oleh panitia PB Sakral Tournament 2026.\n\nSilakan melakukan pembayaran registrasi sebesar:\n\nRp${reg.payment.amountDue.toLocaleString("id-ID")} / pasangan\n\nTransfer ke:\n${cat.bankName||"(bank belum diatur)"}\n${cat.bankAccount||"(nomor rekening belum diatur)"}\na.n. ${cat.bankHolder||"(nama pemilik belum diatur)"}\n\nMohon tuliskan pada deskripsi transfer:\n${cat.code} - Nama Pasangan\n\nContoh:\n${cat.code} - Hendrik/Irwan\n\nSetelah transfer, mohon kirim bukti pembayaran ke WhatsApp ini untuk diproses panitia.`;
     case "REGISTRATION_REJECTED":
       return `Mohon maaf, pendaftaran ${reg.regNo} atas nama ${pairName} tidak dapat kami proses lebih lanjut.` + (reg.adminNote? ` Catatan panitia: ${reg.adminNote}` : "");
     case "CATEGORY_CHANGE_REQUESTED":
@@ -805,7 +805,25 @@ function buildMessage(type, reg, extra){
     case "PAYMENT_PROOF_SUBMITTED":
       return `Bukti pembayaran untuk ${reg.regNo} telah kami terima dan sedang diverifikasi panitia.`;
     case "PAYMENT_VERIFIED":
-      return `Pembayaran berhasil diverifikasi.\n${pairName} resmi TERDAFTAR pada kategori ${cat.name}.\nNomor registrasi: ${reg.regNo}.`;
+      return `Halo ${pairName},\n\nPembayaran registrasi kamu sudah kami terima dan berhasil diverifikasi. Statusnya sekarang: LUNAS \u2705\n\nKategori: ${cat.name}\nNomor registrasi: ${reg.regNo}\n\nDeposit kok Rp${DEPOSIT_FEE.toLocaleString("id-ID")}/pasangan dibayar tunai langsung ke panitia saat hari-H. Jadwal pertandingan akan kami infokan menyusul setelah drawing & technical meeting selesai.`;
+    case "MATCH_SCHEDULE_INFO": {
+      const myMatches = participantMatches(reg.id, reg.category);
+      const upcoming = myMatches.filter(m=> m.status!=="FINISHED" && m.status!=="WO" && m.status!=="CANCELLED")
+        .map(m=>({m, sched: scheduleFor(m.id)}))
+        .sort((a,b)=>{
+          if(!a.sched && !b.sched) return 0;
+          if(!a.sched) return 1;
+          if(!b.sched) return -1;
+          return (a.sched.day-b.sched.day) || (a.sched.timeIndex-b.sched.timeIndex);
+        })[0];
+      if(!upcoming || !upcoming.sched){
+        return `Halo ${pairName},\n\nJadwal pertandingan kategori ${cat.name} masih menunggu diatur panitia. Kami kabari lagi begitu jadwal sudah keluar.\n\nCek status kapan saja: ${statusLink}`;
+      }
+      const {m, sched} = upcoming;
+      const day = TOURNAMENT_DAYS.find(d=>d.day===sched.day);
+      const opponent = opponentLabelFor(reg.category, m, reg.id);
+      return `Halo ${pairName},\n\nBerikut jadwal pertandingan kamu:\n\nKategori: ${cat.name}\nBabak: ${ROUND_LABELS[m.round]} #${m.matchNo}\nLawan: ${opponent}\nHari/Tanggal: ${day?day.label:"-"}\nJam: ${timeLabel(sched.timeIndex)}\nLapangan: ${sched.court}\n\nMohon hadir 30 menit sebelum jadwal untuk registrasi ulang di lokasi.\n\nCek jadwal & hasil terbaru: ${statusLink}`;
+    }
     case "DATA_REVISION_REQUESTED":
       return `Panitia memerlukan kelengkapan data tambahan untuk pendaftaran ${reg.regNo}: ${extra.note||reg.adminNote||"-"}\nSilakan lengkapi melalui: ${statusLink}`;
     default:
@@ -2359,6 +2377,17 @@ function viewAdminDetail(params){
       }
     })}, full? "Kuota masih penuh" : "Promote ke Menunggu Pembayaran"));
   } else if(reg.status==="REGISTERED"){
+    const myMatches = participantMatches(reg.id, reg.category);
+    if(myMatches.length>0){
+      actions.appendChild(el("button",{class:"btn btn-info btn-block", style:"margin-bottom:10px;", onclick:()=>{
+        const notif = { id: uid(), type:"MATCH_SCHEDULE_INFO", message: buildMessage("MATCH_SCHEDULE_INFO", reg, {}), status:"QUEUED", createdAt: nowIso(), sentAt:"", errorMessage:"", providerMessageId:"" };
+        reg.notifications = reg.notifications || [];
+        reg.notifications.unshift(notif);
+        persistReg(reg);
+        openWaLink(reg, notif);
+        render();
+      }},"\ud83d\udcc5 Kirim Info Jadwal Pertandingan"));
+    }
     if(reg.deposit){
       actions.appendChild(el("div",{class:"kv"},[el("span",{class:"k"},"Sisa Deposit"),el("span",{class:"v"},rupiah(reg.deposit.balance))]));
     } else {
@@ -2467,8 +2496,8 @@ function renderManualWaModal(reg){
   const modal = el("div",{class:"modal"});
   modal.appendChild(el("h3",{},"Kirim WhatsApp Manual"));
   modal.appendChild(el("p",{},"Pilih template pesan untuk dikirim ke nomor peserta."));
-  const types = ["REGISTRATION_SUBMITTED","REGISTRATION_ACCEPTED","REGISTRATION_REJECTED","CATEGORY_CHANGE_REQUESTED","PAYMENT_PROOF_SUBMITTED","PAYMENT_VERIFIED","DATA_REVISION_REQUESTED"];
-  const labels = {REGISTRATION_SUBMITTED:"Registrasi Diterima Sistem",REGISTRATION_ACCEPTED:"Pendaftaran Diterima Panitia",REGISTRATION_REJECTED:"Pendaftaran Ditolak",CATEGORY_CHANGE_REQUESTED:"Usulan Pindah Kategori",PAYMENT_PROOF_SUBMITTED:"Bukti Bayar Diterima",PAYMENT_VERIFIED:"Pembayaran Terverifikasi",DATA_REVISION_REQUESTED:"Minta Data Tambahan"};
+  const types = ["REGISTRATION_SUBMITTED","REGISTRATION_ACCEPTED","REGISTRATION_REJECTED","CATEGORY_CHANGE_REQUESTED","PAYMENT_PROOF_SUBMITTED","PAYMENT_VERIFIED","MATCH_SCHEDULE_INFO","DATA_REVISION_REQUESTED"];
+  const labels = {REGISTRATION_SUBMITTED:"Registrasi Diterima Sistem",REGISTRATION_ACCEPTED:"Pendaftaran Diterima Panitia",REGISTRATION_REJECTED:"Pendaftaran Ditolak",CATEGORY_CHANGE_REQUESTED:"Usulan Pindah Kategori",PAYMENT_PROOF_SUBMITTED:"Bukti Bayar Diterima",PAYMENT_VERIFIED:"Pembayaran Terverifikasi",MATCH_SCHEDULE_INFO:"Info Jadwal Pertandingan",DATA_REVISION_REQUESTED:"Minta Data Tambahan"};
   const sel = el("select",{style:"width:100%;background:var(--bg-elev);border:1px solid var(--line);border-radius:9px;padding:10px;color:var(--ink);margin-bottom:14px;"});
   types.forEach(t=>{
     if(t==="CATEGORY_CHANGE_REQUESTED" && !reg.pendingCategory) return;
@@ -3182,25 +3211,21 @@ function viewAdminLoket(){
   wrap.appendChild(topbar("admin"));
   const sec = el("div",{class:"section"});
   sec.appendChild(adminTabs("admin-loket"));
-  sec.appendChild(el("div",{class:"section-title"},"Loket \u2014 Cek Kode Pemain"));
-  sec.appendChild(el("div",{style:"color:var(--ink-dim);font-size:13px;margin-bottom:14px;"},"Cari pakai kode pemain (nomor registrasi) untuk cek status bayar & deposit, atau terima pembayaran tambahan/top-up di hari-H."));
+  sec.appendChild(el("div",{class:"section-title"},"Loket \u2014 Cek & Terima Pembayaran"));
+  sec.appendChild(el("div",{style:"color:var(--ink-dim);font-size:13px;margin-bottom:14px;"},"Cari pakai kode pemain, nama pemain, atau nama PB/klub untuk cek status bayar & deposit, atau terima pembayaran tambahan/top-up di hari-H."));
 
   const searchBox = el("div",{class:"search-box"});
-  const input = el("input",{placeholder:"Kode pemain, contoh PRM-001", value: loketRegNo});
-  input.addEventListener("input",(e)=>{ loketRegNo = e.target.value; });
+  const input = el("input",{placeholder:"Kode / nama pemain / nama PB", value: loketRegNo});
+  input.addEventListener("input",(e)=>{ loketRegNo = e.target.value; doLoketSearch(); });
   input.addEventListener("keydown",(e)=>{ if(e.key==="Enter") doLoketSearch(); });
   searchBox.appendChild(input);
   sec.appendChild(searchBox);
-  sec.appendChild(el("button",{class:"btn btn-gold btn-block", onclick: doLoketSearch},"Cari"));
   wrap.appendChild(sec);
 
-  if(loketFoundId==="notfound"){
+  if(loketFoundId){
     const s2 = el("div",{class:"section", style:"padding-top:0;"});
-    s2.appendChild(el("div",{class:"flag"},"Kode pemain tidak ditemukan."));
-    wrap.appendChild(s2);
-  } else if(loketFoundId){
+    s2.appendChild(backRow(()=>{ loketFoundId=null; render(); }));
     const summary = INDEX.find(r=>r.id===loketFoundId);
-    const s2 = el("div",{class:"section", style:"padding-top:0;"});
     if(!summary){
       s2.appendChild(el("div",{class:"flag"},"Data tidak ditemukan."));
     } else {
@@ -3210,13 +3235,32 @@ function viewAdminLoket(){
       else { s2.appendChild(renderLoketCard(reg)); }
     }
     wrap.appendChild(s2);
+  } else if(loketRegNo.trim()){
+    const s2 = el("div",{class:"section", style:"padding-top:0;"});
+    const q = loketRegNo.trim().toLowerCase();
+    const results = INDEX.filter(r => [r.regNo,r.player1,r.player2,r.club].join(" ").toLowerCase().includes(q));
+    if(results.length===0){
+      s2.appendChild(el("div",{class:"flag"},"Tidak ada pendaftar yang cocok."));
+    } else {
+      results.forEach(r=>{
+        const cat = catByCode(r.category);
+        const row = el("div",{class:"reg-row", onclick:()=>{ loketFoundId=r.id; render(); }});
+        const left = el("div",{class:"rr-left"});
+        left.appendChild(el("div",{class:"rr-no"},r.regNo));
+        left.appendChild(el("div",{class:"rr-name"},r.player1+" / "+r.player2));
+        left.appendChild(el("div",{class:"rr-sub"},[cat.name+" \u00b7 "+r.club]));
+        row.appendChild(left);
+        row.appendChild(statusBadge(r.status));
+        s2.appendChild(row);
+      });
+    }
+    wrap.appendChild(s2);
   }
   if(loketReceipt) wrap.appendChild(renderLoketReceiptModal());
   return wrap;
 }
 function doLoketSearch(){
-  const s = findSummaryByNo(loketRegNo);
-  loketFoundId = s ? s.id : "notfound";
+  loketFoundId = null;
   render();
 }
 function renderLoketCard(reg){
@@ -3386,18 +3430,42 @@ function viewAdminFinance(){
     });
   }
 
-  sec.appendChild(el("div",{class:"section-title", style:"margin-top:22px;"},"Per Peserta"));
+  sec.appendChild(el("div",{class:"section-title", style:"margin-top:22px;"},"Status Biaya Semua Peserta"));
+  sec.appendChild(el("div",{style:"color:var(--ink-dim);font-size:12px;margin-bottom:10px;"},"Tap baris untuk buka di Loket (cek detail / terima pembayaran kekurangan)."));
   if(registeredList.length===0){
     sec.appendChild(el("div",{class:"empty"},"Belum ada peserta resmi."));
   } else {
-    registeredList.slice().sort((a,b)=>a.regNo.localeCompare(b.regNo)).forEach(r=>{
+    const sorted = registeredList.slice().sort((a,b)=>{
+      const da = a.depositInitial? a.depositBalance : 0;
+      const db = b.depositInitial? b.depositBalance : 0;
+      if(da<0 && db>=0) return -1;
+      if(db<0 && da>=0) return 1;
+      return a.regNo.localeCompare(b.regNo);
+    });
+    sorted.forEach(r=>{
       const cat = catByCode(r.category);
-      const row = el("div",{class:"fin-row"});
+      const row = el("div",{class:"fin-row", style:"cursor:pointer;", onclick:()=>{
+        loketRegNo = r.regNo; loketFoundId = r.id; ensureRegLoaded(r.id); nav("admin-loket");
+      }});
       row.appendChild(el("div",{},[
         el("div",{class:"fr-name"}, r.player1+" / "+r.player2),
-        el("div",{class:"fr-sub"}, r.regNo+" \u00b7 "+cat.name+" \u00b7 "+(r.paymentMethod==="CASH"?"\ud83d\udcb5 Tunai":"\ud83c\udfe6 Transfer")+" "+rupiah(r.paymentAmountPaid))
+        el("div",{class:"fr-sub"}, r.regNo+" \u00b7 "+cat.name+" \u00b7 "+r.club)
       ]));
-      row.appendChild(el("div",{class:"fr-balance"}, r.depositInitial ? rupiah(r.depositBalance) : "\u2014"));
+      let statusEl;
+      if(!r.depositInitial){
+        statusEl = el("div",{style:"text-align:right;"},[el("span",{class:"badge b-wait"},[el("span",{class:"b-dot"}),"Deposit Belum Diterima"])]);
+      } else if(r.depositBalance<0){
+        statusEl = el("div",{style:"text-align:right;"},[
+          el("div",{class:"fr-balance", style:"color:var(--danger);"}, rupiah(r.depositBalance)),
+          el("div",{style:"font-size:10px;color:var(--danger);font-weight:700;"},"\u26a0 KURANG BAYAR")
+        ]);
+      } else {
+        statusEl = el("div",{style:"text-align:right;"},[
+          el("div",{class:"fr-balance"}, rupiah(r.depositBalance)),
+          el("div",{style:"font-size:10px;color:var(--ok);"},"\u2713 Aman")
+        ]);
+      }
+      row.appendChild(statusEl);
       sec.appendChild(row);
     });
   }
