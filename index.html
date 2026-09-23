@@ -784,7 +784,8 @@ function nextRegNo(cat){
   const n = META.counters[cat.prefix];
   return cat.prefix + "-" + String(n).padStart(3,"0");
 }
-function findSummaryByNo(no){ return INDEX.find(r=>r.regNo.toLowerCase()===String(no).trim().toLowerCase()); }
+function displayCode(regNo){ return regNo || "Belum ada kode"; }
+function findSummaryByNo(no){ return INDEX.find(r=>r.regNo && r.regNo.toLowerCase()===String(no).trim().toLowerCase()); }
 
 /* ============ NOTIFICATIONS (WhatsApp — manual-send model) ============ */
 function buildMessage(type, reg, extra){
@@ -794,18 +795,18 @@ function buildMessage(type, reg, extra){
   const statusLink = statusLinkFor(reg.regNo);
   switch(type){
     case "REGISTRATION_SUBMITTED":
-      return `PB SAKRAL TOURNAMENT 2026\nPendaftaran ${reg.regNo} atas nama ${pairName} telah kami terima. Status saat ini: Menunggu Validasi Panitia.\nCek status: ${statusLink}`;
+      return `PB SAKRAL TOURNAMENT 2026\nPendaftaran ${displayCode(reg.regNo)} atas nama ${pairName} telah kami terima. Status saat ini: Menunggu Validasi Panitia.\nCek status: ${statusLink}`;
     case "REGISTRATION_ACCEPTED":
       return `Halo ${pairName},\n\nPendaftaran Anda untuk kategori ${cat.name.toUpperCase()} telah DISETUJUI oleh panitia PB Sakral Tournament 2026.\n\nSilakan melakukan pembayaran registrasi sebesar:\n\nRp${reg.payment.amountDue.toLocaleString("id-ID")} / pasangan\n\nTransfer ke:\n${cat.bankName||"(bank belum diatur)"}\n${cat.bankAccount||"(nomor rekening belum diatur)"}\na.n. ${cat.bankHolder||"(nama pemilik belum diatur)"}\n\nMohon tuliskan pada deskripsi transfer:\n${cat.code} - Nama Pasangan\n\nContoh:\n${cat.code} - Hendrik/Irwan\n\nSetelah transfer, mohon kirim bukti pembayaran ke WhatsApp ini untuk diproses panitia.`;
     case "REGISTRATION_REJECTED":
-      return `Mohon maaf, pendaftaran ${reg.regNo} atas nama ${pairName} tidak dapat kami proses lebih lanjut.` + (reg.adminNote? ` Catatan panitia: ${reg.adminNote}` : "");
+      return `Mohon maaf, pendaftaran ${displayCode(reg.regNo)} atas nama ${pairName} tidak dapat kami proses lebih lanjut.` + (reg.adminNote? ` Catatan panitia: ${reg.adminNote}` : "");
     case "CATEGORY_CHANGE_REQUESTED":
       const newCat = catByCode(reg.pendingCategory);
-      return `Panitia mengusulkan perubahan kategori untuk pendaftaran ${reg.regNo} menjadi ${newCat.name}. Silakan konfirmasi melalui: ${statusLink}`;
+      return `Panitia mengusulkan perubahan kategori untuk pendaftaran ${displayCode(reg.regNo)} menjadi ${newCat.name}. Silakan konfirmasi melalui: ${statusLink}`;
     case "PAYMENT_PROOF_SUBMITTED":
-      return `Bukti pembayaran untuk ${reg.regNo} telah kami terima dan sedang diverifikasi panitia.`;
+      return `Bukti pembayaran untuk ${displayCode(reg.regNo)} telah kami terima dan sedang diverifikasi panitia.`;
     case "PAYMENT_VERIFIED":
-      return `Halo ${pairName},\n\nPembayaran registrasi kamu sudah kami terima dan berhasil diverifikasi. Statusnya sekarang: LUNAS \u2705\n\nKategori: ${cat.name}\nNomor registrasi: ${reg.regNo}\n\nDeposit kok Rp${DEPOSIT_FEE.toLocaleString("id-ID")}/pasangan dibayar tunai langsung ke panitia saat hari-H. Jadwal pertandingan akan kami infokan menyusul setelah drawing & technical meeting selesai.`;
+      return `Halo ${pairName},\n\nPembayaran registrasi kamu sudah kami terima dan berhasil diverifikasi. Statusnya sekarang: LUNAS \u2705\n\nKategori: ${cat.name}\nNomor registrasi: ${displayCode(reg.regNo)}\n\nDeposit kok Rp${DEPOSIT_FEE.toLocaleString("id-ID")}/pasangan dibayar tunai langsung ke panitia saat hari-H. Jadwal pertandingan akan kami infokan menyusul setelah drawing & technical meeting selesai.`;
     case "MATCH_SCHEDULE_INFO": {
       const myMatches = participantMatches(reg.id, reg.category);
       const upcoming = myMatches.filter(m=> m.status!=="FINISHED" && m.status!=="WO" && m.status!=="CANCELLED")
@@ -825,9 +826,9 @@ function buildMessage(type, reg, extra){
       return `Halo ${pairName},\n\nBerikut jadwal pertandingan kamu:\n\nKategori: ${cat.name}\nBabak: ${ROUND_LABELS[m.round]} #${m.matchNo}\nLawan: ${opponent}\nHari/Tanggal: ${day?day.label:"-"}\nJam: ${timeLabel(sched.timeIndex)}\nLapangan: ${sched.court}\n\nMohon hadir 30 menit sebelum jadwal untuk registrasi ulang di lokasi.\n\nCek jadwal & hasil terbaru: ${statusLink}`;
     }
     case "DATA_REVISION_REQUESTED":
-      return `Panitia memerlukan kelengkapan data tambahan untuk pendaftaran ${reg.regNo}: ${extra.note||reg.adminNote||"-"}\nSilakan lengkapi melalui: ${statusLink}`;
+      return `Panitia memerlukan kelengkapan data tambahan untuk pendaftaran ${displayCode(reg.regNo)}: ${extra.note||reg.adminNote||"-"}\nSilakan lengkapi melalui: ${statusLink}`;
     default:
-      return `PB SAKRAL TOURNAMENT 2026 — Update untuk pendaftaran ${reg.regNo}.`;
+      return `PB SAKRAL TOURNAMENT 2026 — Update untuk pendaftaran ${displayCode(reg.regNo)}.`;
   }
 }
 function pushNotification(reg, type, extra){
@@ -1262,8 +1263,15 @@ function viewSuccess(params){
 let statusLookupValue = "";
 let statusFoundId = null;
 function lookupStatusByRegNo(no){
-  const s = findSummaryByNo(no);
-  return s ? s.id : "notfound";
+  const q = String(no||"").trim();
+  if(!q) return "notfound";
+  const exact = findSummaryByNo(q);
+  if(exact) return exact.id;
+  const qLower = q.toLowerCase();
+  const clubMatches = INDEX.filter(r => (r.club||"").trim().toLowerCase() === qLower);
+  if(clubMatches.length===1) return clubMatches[0].id;
+  if(clubMatches.length>1) return "ambiguous";
+  return "notfound";
 }
 function viewStatus(params){
   if(params && params.regNo){
@@ -1276,9 +1284,9 @@ function viewStatus(params){
   wrap.appendChild(backRow(()=>nav("home")));
   const sec = el("div",{class:"section"});
   sec.appendChild(el("h2",{style:"font-size:22px;margin:0 0 4px;"},"Cek Jadwal & Status"));
-  sec.appendChild(el("div",{style:"color:var(--ink-dim);font-size:13px;margin-bottom:16px;"},"Masukkan nomor registrasi kamu (dikirim panitia via WhatsApp), contoh PRM-001, untuk lihat jadwal main, hasil, dan status."));
+  sec.appendChild(el("div",{style:"color:var(--ink-dim);font-size:13px;margin-bottom:16px;"},"Masukkan kode booking (dikirim panitia via WhatsApp) atau nama PB/klub kamu untuk lihat jadwal main, hasil, dan status."));
   const searchBox = el("div",{class:"search-box"});
-  const input = el("input",{placeholder:"Nomor registrasi", value: statusLookupValue});
+  const input = el("input",{placeholder:"Kode booking atau nama PB", value: statusLookupValue});
   input.addEventListener("input",(e)=>{ statusLookupValue = e.target.value; });
   input.addEventListener("keydown",(e)=>{ if(e.key==="Enter") doStatusLookup(); });
   searchBox.appendChild(input);
@@ -1288,7 +1296,11 @@ function viewStatus(params){
 
   if(statusFoundId==="notfound"){
     const s2 = el("div",{class:"section", style:"padding-top:0;"});
-    s2.appendChild(el("div",{class:"flag"},"Nomor registrasi tidak ditemukan. Periksa kembali penulisannya."));
+    s2.appendChild(el("div",{class:"flag"},"Tidak ditemukan. Periksa kembali kode booking atau nama PB kamu."));
+    wrap.appendChild(s2);
+  } else if(statusFoundId==="ambiguous"){
+    const s2 = el("div",{class:"section", style:"padding-top:0;"});
+    s2.appendChild(el("div",{class:"flag"},"Ada lebih dari satu pasangan terdaftar dengan nama PB ini. Silakan gunakan kode booking kamu sendiri (dikirim panitia via WhatsApp) untuk melihat status yang tepat."));
     wrap.appendChild(s2);
   } else if(statusFoundId){
     const reg = REG_CACHE[statusFoundId];
@@ -1375,7 +1387,7 @@ function renderRegistrationStatusCard(reg){
   const card = el("div",{class:"card"});
   const head = el("div",{style:"display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:10px;gap:10px;"});
   head.appendChild(el("div",{},[
-    el("div",{style:"font-size:11px;color:var(--ink-faint);font-weight:700;"},reg.regNo),
+    el("div",{style:"font-size:11px;color:var(--ink-faint);font-weight:700;"},displayCode(reg.regNo)),
     el("div",{style:"font-weight:800;font-size:15.5px;margin-top:2px;"},reg.player1+" / "+reg.player2)
   ]));
   head.appendChild(statusBadge(reg.status));
@@ -2010,7 +2022,7 @@ function renderListResults(){
     const cat = catByCode(r.category);
     const row = el("div",{class:"reg-row", onclick:()=>nav("admin-detail",{id:r.id})});
     const left = el("div",{class:"rr-left"});
-    left.appendChild(el("div",{class:"rr-no"},r.regNo));
+    left.appendChild(el("div",{class:"rr-no"},displayCode(r.regNo)));
     left.appendChild(el("div",{class:"rr-name"},r.player1+" / "+r.player2));
     left.appendChild(el("div",{class:"rr-sub"},[cat.name+" \u00b7 "+r.club]));
     row.appendChild(left);
@@ -2083,39 +2095,15 @@ function viewAdminManualEntry(){
   noteField.appendChild(noteInput);
   card.appendChild(noteField);
 
-  const paidField = el("div",{class:"field"});
-  paidField.appendChild(el("label",{},"Status Pembayaran"));
-  const paidSeg = el("div",{class:"seg"});
-  const btnBelum = el("button",{class: !manualEntryState.alreadyPaid?"active":"", type:"button"},"Diterima, Belum Bayar");
-  const btnLunas = el("button",{class: manualEntryState.alreadyPaid?"active":"", type:"button"},"Sudah Lunas");
-  paidSeg.appendChild(btnBelum); paidSeg.appendChild(btnLunas);
-  paidField.appendChild(paidSeg);
-  card.appendChild(paidField);
-
-  const methodArea = el("div",{});
-  card.appendChild(methodArea);
-  function renderMethodArea(){
-    methodArea.innerHTML = "";
-    if(!manualEntryState.alreadyPaid) return;
-    const methodField = el("div",{class:"field"});
-    methodField.appendChild(el("label",{},"Metode Pembayaran"));
-    const seg = el("div",{class:"seg"});
-    const btnT = el("button",{class: manualEntryState.paymentMethod==="TRANSFER"?"active":"", type:"button"},"Transfer/QRIS");
-    const btnC = el("button",{class: manualEntryState.paymentMethod==="CASH"?"active":"", type:"button"},"Tunai");
-    seg.appendChild(btnT); seg.appendChild(btnC);
-    btnT.addEventListener("click",()=>{ manualEntryState.paymentMethod="TRANSFER"; btnT.className="active"; btnC.className=""; });
-    btnC.addEventListener("click",()=>{ manualEntryState.paymentMethod="CASH"; btnC.className="active"; btnT.className=""; });
-    methodField.appendChild(seg);
-    methodArea.appendChild(methodField);
-  }
-  btnBelum.addEventListener("click",()=>{ manualEntryState.alreadyPaid=false; btnBelum.className="active"; btnLunas.className=""; renderMethodArea(); });
-  btnLunas.addEventListener("click",()=>{ manualEntryState.alreadyPaid=true; btnLunas.className="active"; btnBelum.className=""; renderMethodArea(); });
-  renderMethodArea();
+  card.appendChild(el("div",{class:"flag info"},"Peserta akan tersimpan berstatus \"Diterima, Belum Bayar\" \u2014 kode peserta baru muncul begitu kamu tandai sudah bayar (di halaman detailnya). Belum perlu isi pembayaran di sini."));
 
   const errBox = el("div",{});
   card.appendChild(errBox);
 
-  card.appendChild(el("button",{class:"btn btn-gold btn-block", style:"margin-top:6px;", onclick: async ()=>{
+  const submitBtn = el("button",{class:"btn btn-gold btn-block", style:"margin-top:6px;"},"Simpan Peserta (Belum Bayar)");
+  let submitting = false;
+  submitBtn.addEventListener("click", async ()=>{
+    if(submitting) return;
     errBox.innerHTML = "";
     const s = manualEntryState;
     const missing = [];
@@ -2127,42 +2115,43 @@ function viewAdminManualEntry(){
     if(!s.domicile) missing.push("Domisili");
     if(missing.length){ errBox.appendChild(el("div",{class:"flag"},"Lengkapi dulu: "+missing.join(", "))); return; }
 
+    submitting = true;
+    submitBtn.disabled = true;
+    submitBtn.textContent = "Menyimpan...";
+
     const cat = catByCode(s.category);
-    const regNo = nextRegNo(cat);
     const nowT = nowIso();
     const full = isQuotaFull(s.category);
-    const paid = s.alreadyPaid && !full;
     const reg = {
-      id: uid(), regNo, category: s.category, pendingCategory: null,
+      id: uid(), regNo: null, category: s.category, pendingCategory: null,
       player1: s.player1.trim(), player2: s.player2.trim(), player1PhotoUrl:"", player2PhotoUrl:"",
       club: s.club.trim(), whatsapp: s.whatsapp.trim(), whatsappNumberNormalized: normalizeWhatsapp(s.whatsapp),
       whatsappOptIn: true, whatsappOptInAt: nowT,
       domicile: s.domicile.trim(), note: (s.note||"").trim() ? (s.note.trim()+" (Input manual via WA oleh panitia)") : "Didaftarkan manual oleh panitia via WhatsApp.",
       verificationVideo: { type:"link", value:"" },
       rulesAccepted: true, rulesAcceptedAt: nowT, categoryRulesVersion: CATEGORY_RULES_VERSION,
-      status: full ? "WAITING_LIST" : (paid ? "REGISTERED" : "WAITING_PAYMENT"),
+      status: full ? "WAITING_LIST" : "WAITING_PAYMENT",
       adminNote: "", createdAt: nowT, updatedAt: nowT,
-      payment: { method: paid?s.paymentMethod:"", amountDue: cat.fee, amountPaid: paid?cat.fee:0, senderName: paid?s.player1.trim():"", proofDataUrl:"", status: paid?"PAID":"UNPAID", verifiedBy: paid?"Admin (input manual)":"", verifiedAt: paid?nowT:"" },
-      participant: paid ? { createdAt: nowT } : null,
+      payment: { method:"", amountDue: cat.fee, amountPaid: 0, senderName:"", proofDataUrl:"", status:"UNPAID", verifiedBy:"", verifiedAt:"" },
+      participant: null,
       deposit: null, depositTransactions: [], notifications: [],
     };
     if(full){
       if(META.settings.whatsappEnabled){
         reg.notifications.unshift({ id:uid(), type:"MANUAL_WAITLIST",
-          message: "Halo "+reg.player1+"/"+reg.player2+", pendaftaran kategori "+cat.name+" sudah kami catat. Kode pemain kamu: *"+regNo+"*. Saat ini kuota penuh sehingga kamu masuk WAITING LIST \u2014 kami hubungi lagi kalau ada slot kosong.",
+          message: "Halo "+reg.player1+"/"+reg.player2+", pendaftaran kategori "+cat.name+" sudah kami catat. Saat ini kuota penuh sehingga kamu masuk WAITING LIST \u2014 kami hubungi lagi & kirim kode peserta kalau ada slot kosong.",
           status:"QUEUED", createdAt: nowT, sentAt:"", errorMessage:"", providerMessageId:"" });
       }
-    } else if(paid){
-      pushNotification(reg, "PAYMENT_VERIFIED");
     } else {
       pushNotification(reg, "REGISTRATION_ACCEPTED");
     }
-    await saveMeta();
     const ok = await persistReg(reg);
-    if(!ok) return;
-    showToast(full ? "Pendaftar masuk waiting list (kuota penuh)." : (paid ? "Peserta resmi berhasil dibuat." : "Peserta diterima, menunggu pembayaran."));
+    submitting = false;
+    if(!ok){ submitBtn.disabled = false; submitBtn.textContent = "Simpan Peserta (Belum Bayar)"; return; }
+    showToast(full ? "Pendaftar masuk waiting list (kuota penuh)." : "Peserta diterima, menunggu pembayaran.");
     nav("admin-detail",{id:reg.id});
-  }},"Simpan Peserta"));
+  });
+  card.appendChild(submitBtn);
 
   sec.appendChild(card);
   wrap.appendChild(sec);
@@ -2175,6 +2164,9 @@ let categoryMoveModal = false;
 let revisionRequestModal = false;
 let revisionPrefill = "";
 let manualWaModal = false;
+let markPaidModal = false;
+let markPaidState = {};
+let paidReceipt = null; // {regNo, name, category, amount, method}
 
 function viewAdminDetail(params){
   const wrap = el("div",{});
@@ -2193,7 +2185,7 @@ function viewAdminDetail(params){
 
   const head = el("div",{style:"display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:14px;gap:10px;"});
   head.appendChild(el("div",{},[
-    el("div",{style:"font-size:11px;color:var(--ink-faint);font-weight:700;"},reg.regNo),
+    el("div",{style:"font-size:11px;color:var(--ink-faint);font-weight:700;"},displayCode(reg.regNo)),
     el("h2",{style:"font-size:19px;margin:2px 0 0;"},reg.player1+" / "+reg.player2)
   ]));
   head.appendChild(statusBadge(reg.status));
@@ -2325,8 +2317,17 @@ function viewAdminDetail(params){
   } else if(reg.status==="DATA_REVISION_REQUESTED"){
     actions.appendChild(el("div",{class:"flag warn"},"Menunggu peserta melengkapi data. Catatan: " + (reg.adminNote||"-")));
   } else if(reg.status==="WAITING_PAYMENT"){
-    actions.appendChild(adminPaymentEntryCard(reg));
-    const row2 = el("div",{style:"display:flex;gap:8px;flex-wrap:wrap;margin-top:12px;"});
+    actions.appendChild(el("div",{class:"flag warn"},"Belum bayar \u2014 kode peserta akan muncul otomatis begitu ditandai sudah bayar."));
+    actions.appendChild(el("button",{class:"btn btn-info btn-block", style:"margin-top:10px;", onclick:()=>{
+      const notif = { id: uid(), type:"REGISTRATION_ACCEPTED", message: buildMessage("REGISTRATION_ACCEPTED", reg, {}), status:"QUEUED", createdAt: nowIso(), sentAt:"", errorMessage:"", providerMessageId:"" };
+      reg.notifications = reg.notifications || [];
+      reg.notifications.unshift(notif);
+      persistReg(reg);
+      openWaLink(reg, notif);
+      render();
+    }},"\ud83d\udce4 Kirim WA: Minta Transfer"));
+    actions.appendChild(el("button",{class:"btn btn-gold btn-block", style:"margin-top:8px;", onclick:()=>{ markPaidModal=true; markPaidState={method:"TRANSFER", amount:String(reg.payment.amountDue), sender:reg.player1}; render(); }},"\u2705 Tandai Sudah Bayar"));
+    const row2 = el("div",{style:"display:flex;gap:8px;flex-wrap:wrap;margin-top:10px;"});
     row2.appendChild(el("button",{class:"btn btn-outline btn-sm", onclick:()=>{ revisionRequestModal=true; revisionPrefill=""; render(); }},"Minta Data Tambahan"));
     if(!(reg.verificationVideo && reg.verificationVideo.value)){
       row2.appendChild(el("button",{class:"btn btn-outline btn-sm", onclick:()=>{ revisionRequestModal=true; revisionPrefill="Mohon kirim video verifikasi bermain (\u00b12 menit) sesuai kategori "+cat.name+" untuk validasi panitia."; render(); }},"Minta Video"));
@@ -2427,12 +2428,26 @@ function viewAdminDetail(params){
   noteField.appendChild(noteInput);
   actions.appendChild(noteField);
 
+  actions.appendChild(el("div",{style:"border-top:1px solid var(--line);margin-top:18px;padding-top:14px;"},[
+    el("button",{class:"btn btn-outline btn-block", style:"border-color:var(--danger);color:var(--danger);", onclick:()=>openConfirm({
+      title:"Hapus Data Ini Permanen?",
+      body:"Data pendaftaran "+(reg.regNo||reg.player1+"/"+reg.player2)+" akan DIHAPUS TOTAL dari sistem (bukan cuma dibatalkan) dan tidak bisa dikembalikan. Gunakan untuk data test atau yang salah input.",
+      confirmLabel:"Hapus Permanen", danger:true,
+      onConfirm: async ()=>{
+        const ok = await deleteRegistrationPermanently(reg);
+        if(ok){ showToast("Data berhasil dihapus."); nav("admin-list"); }
+      }
+    })},"\ud83d\uddd1\ufe0f Hapus Data Ini Permanen")
+  ]));
+
   sec.appendChild(actions);
   wrap.appendChild(sec);
 
   if(categoryMoveModal) wrap.appendChild(renderCategoryMoveModal(reg));
   if(revisionRequestModal) wrap.appendChild(renderRevisionRequestModal(reg));
   if(manualWaModal) wrap.appendChild(renderManualWaModal(reg));
+  if(markPaidModal) wrap.appendChild(renderMarkPaidModal(reg));
+  if(paidReceipt) wrap.appendChild(renderPaidReceiptModal());
 
   return wrap;
 }
@@ -2521,14 +2536,122 @@ function renderManualWaModal(reg){
   return overlay;
 }
 
+function renderMarkPaidModal(reg){
+  const overlay = el("div",{class:"modal-overlay", onclick:(e)=>{ if(e.target===overlay){ markPaidModal=false; render(); } }});
+  const modal = el("div",{class:"modal"});
+  modal.appendChild(el("h3",{},"\u2705 Tandai Sudah Bayar"));
+  modal.appendChild(el("p",{},"Kode peserta akan dibuat sekarang, sesuai urutan pembayaran."));
+
+  const methodField = el("div",{class:"field"});
+  methodField.appendChild(el("label",{},"Metode Pembayaran"));
+  const seg = el("div",{class:"seg"});
+  const btnT = el("button",{class: markPaidState.method==="TRANSFER"?"active":"", type:"button"},"Transfer/QRIS");
+  const btnC = el("button",{class: markPaidState.method==="CASH"?"active":"", type:"button"},"Tunai");
+  seg.appendChild(btnT); seg.appendChild(btnC);
+  btnT.addEventListener("click",()=>{ markPaidState.method="TRANSFER"; btnT.className="active"; btnC.className=""; });
+  btnC.addEventListener("click",()=>{ markPaidState.method="CASH"; btnC.className="active"; btnT.className=""; });
+  methodField.appendChild(seg);
+  modal.appendChild(methodField);
+
+  const amtField = el("div",{class:"field"});
+  amtField.appendChild(el("label",{},"Nominal Diterima"));
+  const amtInput = el("input",{type:"number", value: markPaidState.amount});
+  amtInput.addEventListener("input",(e)=>{ markPaidState.amount = e.target.value; });
+  amtField.appendChild(amtInput);
+  modal.appendChild(amtField);
+
+  const senderField = el("div",{class:"field"});
+  senderField.appendChild(el("label",{},"Nama Pengirim/Pembayar"));
+  const senderInput = el("input",{type:"text", value: markPaidState.sender});
+  senderInput.addEventListener("input",(e)=>{ markPaidState.sender = e.target.value; });
+  senderField.appendChild(senderInput);
+  modal.appendChild(senderField);
+
+  const errBox = el("div",{});
+  modal.appendChild(errBox);
+
+  const actions = el("div",{class:"modal-actions"});
+  actions.appendChild(el("button",{class:"btn btn-outline", onclick:()=>{ markPaidModal=false; render(); }},"Batal"));
+  const confirmBtn = el("button",{class:"btn btn-gold"},"Tandai Lunas & Buat Kode");
+  let submitting = false;
+  confirmBtn.addEventListener("click", async ()=>{
+    if(submitting) return;
+    errBox.innerHTML = "";
+    const amt = Number(markPaidState.amount);
+    if(!amt || amt<=0 || !markPaidState.sender.trim()){
+      errBox.appendChild(el("div",{class:"flag"},"Isi nominal dan nama pembayar dengan benar."));
+      return;
+    }
+    submitting = true;
+    confirmBtn.disabled = true;
+    confirmBtn.textContent = "Menyimpan...";
+    const cat = catByCode(reg.category);
+    const nowT = nowIso();
+    reg.regNo = nextRegNo(cat);
+    reg.payment.method = markPaidState.method;
+    reg.payment.amountPaid = amt;
+    reg.payment.senderName = markPaidState.sender.trim();
+    reg.payment.status = "PAID";
+    reg.payment.verifiedBy = "Admin";
+    reg.payment.verifiedAt = nowT;
+    reg.status = "REGISTERED";
+    reg.participant = { createdAt: nowT };
+    await saveMeta();
+    const ok = await persistReg(reg);
+    submitting = false;
+    if(!ok){ confirmBtn.disabled=false; confirmBtn.textContent="Tandai Lunas & Buat Kode"; return; }
+    markPaidModal = false;
+    paidReceipt = { id: reg.id, regNo: reg.regNo, name: reg.player1+" / "+reg.player2, category: cat.name, amount: amt, method: markPaidState.method };
+    render();
+  });
+  actions.appendChild(confirmBtn);
+  modal.appendChild(actions);
+  overlay.appendChild(modal);
+  return overlay;
+}
+
+function renderPaidReceiptModal(){
+  const r = paidReceipt;
+  const overlay = el("div",{class:"modal-overlay", onclick:(e)=>{ if(e.target===overlay){ paidReceipt=null; render(); } }});
+  const modal = el("div",{class:"modal"});
+  modal.appendChild(el("h3",{},"\u2705 Lunas \u2014 Kode Peserta Dibuat"));
+  const card = el("div",{class:"card", style:"margin-bottom:14px;text-align:center;"});
+  card.appendChild(el("div",{style:"font-size:11px;color:var(--ink-faint);"},"Kode Peserta"));
+  card.appendChild(el("div",{style:"font-family:'Anton';font-size:28px;color:var(--gold-bright);letter-spacing:1px;"}, r.regNo));
+  card.appendChild(el("div",{class:"kv"},[el("span",{class:"k"},"Nama"),el("span",{class:"v"},r.name)]));
+  card.appendChild(el("div",{class:"kv"},[el("span",{class:"k"},"Kategori"),el("span",{class:"v"},r.category)]));
+  card.appendChild(el("div",{class:"kv"},[el("span",{class:"k"},"Diterima"),el("span",{class:"v", style:"color:var(--gold-bright);"},rupiah(r.amount)+" ("+(r.method==="CASH"?"Tunai":"Transfer")+")")]));
+  modal.appendChild(card);
+  modal.appendChild(el("button",{class:"btn btn-info btn-block", style:"margin-bottom:8px;", onclick:()=>{
+    const fullReg = REG_CACHE[r.id];
+    if(fullReg){
+      const notif = { id: uid(), type:"PAYMENT_VERIFIED", message: buildMessage("PAYMENT_VERIFIED", fullReg, {}), status:"QUEUED", createdAt: nowIso(), sentAt:"", errorMessage:"", providerMessageId:"" };
+      fullReg.notifications = fullReg.notifications || [];
+      fullReg.notifications.unshift(notif);
+      persistReg(fullReg);
+      openWaLink(fullReg, notif);
+    }
+  }},"\ud83d\udce4 Kirim WA: Konfirmasi Pembayaran"));
+  modal.appendChild(el("button",{class:"btn btn-gold btn-block", onclick:()=>{ paidReceipt=null; render(); }},"Selesai"));
+  overlay.appendChild(modal);
+  return overlay;
+}
+
 /* ============ ADMIN: PARTICIPANTS ============ */
+let participantsActiveCat = "ALL";
 function viewAdminParticipants(){
   const wrap = el("div",{});
   wrap.appendChild(topbar("admin"));
   const sec = el("div",{class:"section"});
   sec.appendChild(adminTabs("admin-participants"));
   sec.appendChild(el("div",{class:"section-title"},"Peserta Resmi (Terdaftar)"));
-  const items = INDEX.filter(r=>r.status==="REGISTERED").sort((a,b)=>a.regNo.localeCompare(b.regNo));
+  const catTabs = el("div",{class:"tabs"});
+  ["ALL",...META.categories.map(c=>c.code)].forEach(code=>{
+    catTabs.appendChild(el("button",{class: participantsActiveCat===code?"active":"", onclick:()=>{ participantsActiveCat=code; render(); }},
+      code==="ALL"?"Semua Kategori":catByCode(code).name));
+  });
+  sec.appendChild(catTabs);
+  const items = INDEX.filter(r=>r.status==="REGISTERED" && (participantsActiveCat==="ALL" || r.category===participantsActiveCat)).sort((a,b)=>a.regNo.localeCompare(b.regNo));
   if(items.length===0){
     sec.appendChild(el("div",{class:"empty"},"Belum ada peserta resmi."));
   } else {
@@ -2536,7 +2659,7 @@ function viewAdminParticipants(){
       const cat = catByCode(r.category);
       const row = el("div",{class:"reg-row", onclick:()=>nav("admin-detail",{id:r.id})});
       const left = el("div",{class:"rr-left"});
-      left.appendChild(el("div",{class:"rr-no"},r.regNo));
+      left.appendChild(el("div",{class:"rr-no"},displayCode(r.regNo)));
       left.appendChild(el("div",{class:"rr-name"},r.player1+" / "+r.player2));
       left.appendChild(el("div",{class:"rr-sub"},[cat.name+" \u00b7 "+r.club]));
       row.appendChild(left);
@@ -2636,6 +2759,18 @@ function viewAdminDrawing(){
       row.appendChild(sel);
     }
     slotsCard.appendChild(row);
+    if(idx%2===1){
+      const partnerIdx = idx-1;
+      const pidA = drawing.slots[partnerIdx];
+      const pidB = drawing.slots[idx];
+      if(pidA && pidB){
+        const clubA = (regSummary(pidA)||{}).club;
+        const clubB = (regSummary(pidB)||{}).club;
+        if(clubA && clubB && clubA.trim().toLowerCase()===clubB.trim().toLowerCase()){
+          slotsCard.appendChild(el("div",{class:"flag", style:"margin:4px 0 10px;"},"\u26a0\ufe0f Slot #"+(partnerIdx+1)+" & #"+(idx+1)+" satu PB yang sama (\""+clubA+"\") \u2014 ketemu di Babak 1. Pertimbangkan diundi ulang kalau bisa."));
+        }
+      }
+    }
   });
   sec.appendChild(slotsCard);
   wrap.appendChild(sec);
@@ -2776,6 +2911,13 @@ function viewAdminBracket(){
       row.appendChild(el("div",{class:"m-side"+(isWinnerA?" winner":""), style:isWinnerA?"color:var(--gold-bright);":""}, matchSideLabel(cat.code, m.sideA)));
       row.appendChild(el("div",{class:"m-vs"}, m.status==="FINISHED"||m.status==="WO" ? (m.scoreA!==null?m.scoreA+" - "+m.scoreB:"WO") : "vs"));
       row.appendChild(el("div",{class:"m-side"+(isWinnerB?" winner":""), style:isWinnerB?"color:var(--gold-bright);":""}, matchSideLabel(cat.code, m.sideB)));
+      if(m.roundIndex===0 && m.sideA.type==="participant" && m.sideB.type==="participant" && m.sideA.participantId && m.sideB.participantId){
+        const clubA = (regSummary(m.sideA.participantId)||{}).club;
+        const clubB = (regSummary(m.sideB.participantId)||{}).club;
+        if(clubA && clubB && clubA.trim().toLowerCase()===clubB.trim().toLowerCase()){
+          row.appendChild(el("div",{class:"flag", style:"margin-top:6px;"},"\u26a0\ufe0f Satu PB yang sama (\""+clubA+"\") ketemu di Babak 1"));
+        }
+      }
       block.appendChild(row);
     });
     sec.appendChild(block);
@@ -2792,7 +2934,7 @@ function viewAdminSchedule(){
   wrap.appendChild(topbar("admin"));
   const sec = el("div",{class:"section"});
   sec.appendChild(adminTabs("admin-schedule"));
-  sec.appendChild(el("div",{class:"section-title"},"Jadwal 5 Court"));
+  sec.appendChild(el("div",{class:"section-title"},"Jadwal "+COURTS.length+" Lapangan"));
 
   const totalMatches = META.categories.reduce((s,c)=>s+(MATCHES[c.code]||[]).length,0);
   if(totalMatches===0){
@@ -3246,7 +3388,7 @@ function viewAdminLoket(){
         const cat = catByCode(r.category);
         const row = el("div",{class:"reg-row", onclick:()=>{ loketFoundId=r.id; render(); }});
         const left = el("div",{class:"rr-left"});
-        left.appendChild(el("div",{class:"rr-no"},r.regNo));
+        left.appendChild(el("div",{class:"rr-no"},displayCode(r.regNo)));
         left.appendChild(el("div",{class:"rr-name"},r.player1+" / "+r.player2));
         left.appendChild(el("div",{class:"rr-sub"},[cat.name+" \u00b7 "+r.club]));
         row.appendChild(left);
@@ -3268,7 +3410,7 @@ function renderLoketCard(reg){
   const c = el("div",{class:"card"});
   const head = el("div",{style:"display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:10px;"});
   head.appendChild(el("div",{},[
-    el("div",{style:"font-size:11px;color:var(--ink-faint);font-weight:700;"},reg.regNo),
+    el("div",{style:"font-size:11px;color:var(--ink-faint);font-weight:700;"},displayCode(reg.regNo)),
     el("div",{style:"font-weight:800;font-size:15.5px;margin-top:2px;"},reg.player1+" / "+reg.player2)
   ]));
   head.appendChild(statusBadge(reg.status));
@@ -3449,7 +3591,7 @@ function viewAdminFinance(){
       }});
       row.appendChild(el("div",{},[
         el("div",{class:"fr-name"}, r.player1+" / "+r.player2),
-        el("div",{class:"fr-sub"}, r.regNo+" \u00b7 "+cat.name+" \u00b7 "+r.club)
+        el("div",{class:"fr-sub"}, displayCode(r.regNo)+" \u00b7 "+cat.name+" \u00b7 "+r.club)
       ]));
       let statusEl;
       if(!r.depositInitial){
@@ -3840,6 +3982,72 @@ async function clearDemoData(){
   render();
 }
 
+/* ============ DELETE / BACKUP / FULL RESET ============ */
+async function deleteRegistrationPermanently(reg){
+  try{
+    await deleteDoc(doc(db,"registrations",reg.id));
+    await deleteDoc(doc(db,"index",reg.id));
+    INDEX = INDEX.filter(r=>r.id!==reg.id);
+    delete REG_CACHE[reg.id];
+    // also scrub this participant out of any drawing slot / match reference so bracket doesn't dangle
+    META.categories.forEach(cat=>{
+      const d = DRAWING[cat.code];
+      if(d && d.slots){ d.slots = d.slots.map(pid => pid===reg.id ? null : pid); }
+    });
+    return true;
+  }catch(e){ console.error(e); showToast("Gagal menghapus data."); return false; }
+}
+
+async function exportFullBackup(){
+  try{
+    showToast("Menyiapkan backup...");
+    const snap = await getDocs(collection(db,"registrations"));
+    const allRegs = snap.docs.map(d=>d.data());
+    const expSnap = await getDocs(collection(db,"expenses"));
+    const allExpenses = expSnap.docs.map(d=>d.data());
+    const backup = {
+      exportedAt: nowIso(),
+      meta: META,
+      registrations: allRegs,
+      drawing: DRAWING,
+      matches: MATCHES,
+      schedule: SCHEDULE,
+      expenses: allExpenses,
+    };
+    const blob = new Blob([JSON.stringify(backup, null, 2)], {type:"application/json"});
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    const stamp = nowIso().replace(/[:.]/g,"-");
+    a.href = url;
+    a.download = "pbsakral-backup-"+stamp+".json";
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+    showToast("Backup berhasil diunduh.");
+  }catch(e){ console.error(e); showToast("Gagal membuat backup."); }
+}
+
+async function resetAllTournamentData(){
+  try{
+    showToast("Menghapus semua data...");
+    const snap = await getDocs(collection(db,"registrations"));
+    for(const d of snap.docs){ await deleteDoc(doc(db,"registrations",d.id)); }
+    const idxSnap = await getDocs(collection(db,"index"));
+    for(const d of idxSnap.docs){ await deleteDoc(doc(db,"index",d.id)); }
+    const expSnap = await getDocs(collection(db,"expenses"));
+    for(const d of expSnap.docs){ await deleteDoc(doc(db,"expenses",d.id)); }
+    INDEX = [];
+    REG_CACHE = {};
+    META.categories.forEach(cat=>{ DRAWING[cat.code] = defaultDrawingFor(cat); MATCHES[cat.code] = []; });
+    SCHEDULE = [];
+    META.counters = {};
+    await saveDrawing(); await saveMatches(); await saveSchedule(); await saveMeta();
+    showToast("Semua data pendaftar, bracket, jadwal, dan pengeluaran sudah direset.");
+    nav("admin-dashboard");
+  }catch(e){ console.error(e); showToast("Gagal mereset data. Coba lagi."); }
+}
+
 function viewAdminSettings(){
   const wrap = el("div",{});
   wrap.appendChild(topbar("admin"));
@@ -3961,6 +4169,30 @@ function viewAdminSettings(){
   })},"Hapus Data Demo"));
   demoCard.appendChild(demoRow);
   sec.appendChild(demoCard);
+
+  sec.appendChild(el("div",{class:"section-title", style:"margin-top:20px;"},"Backup & Reset Data"));
+  const backupCard = el("div",{class:"card"});
+  backupCard.appendChild(el("div",{style:"font-size:12.5px;color:var(--ink-dim);margin-bottom:12px;"},"Unduh semua data (pendaftar, drawing, bracket, jadwal, pengeluaran) sebagai file JSON. Lakukan ini secara berkala, terutama sebelum/selama hari-H, sebagai jaga-jaga kalau ada masalah koneksi atau kesalahan input."));
+  backupCard.appendChild(el("button",{class:"btn btn-info btn-block", onclick: exportFullBackup},"\u2b07\ufe0f Download Backup Data (JSON)"));
+  sec.appendChild(backupCard);
+
+  const resetCard = el("div",{class:"card", style:"margin-top:10px;border-color:var(--danger);"});
+  resetCard.appendChild(el("div",{style:"font-weight:800;color:var(--danger);font-size:13.5px;margin-bottom:6px;"},"\u26a0\ufe0f Zona Berbahaya"));
+  resetCard.appendChild(el("div",{style:"font-size:12.5px;color:var(--ink-dim);margin-bottom:12px;"},"Hapus SEMUA pendaftar, drawing, bracket, jadwal, dan pengeluaran \u2014 dipakai untuk membersihkan data test/uji coba sebelum turnamen benar-benar mulai. Kategori, kuota, rekening, dan kode akses admin TIDAK ikut terhapus. Tindakan ini permanen."));
+  let resetConfirmText = "";
+  const resetInput = el("input",{type:"text", placeholder:"Ketik HAPUS SEMUA untuk konfirmasi", style:"width:100%;background:var(--bg-elev);border:1px solid var(--danger);border-radius:9px;padding:10px;color:var(--ink);margin-bottom:10px;"});
+  resetInput.addEventListener("input",(e)=>{ resetConfirmText = e.target.value; });
+  resetCard.appendChild(resetInput);
+  resetCard.appendChild(el("button",{class:"btn btn-block", style:"background:var(--danger);color:#fff;", onclick:()=>{
+    if(resetConfirmText.trim().toUpperCase() !== "HAPUS SEMUA"){ showToast('Ketik persis "HAPUS SEMUA" dulu untuk konfirmasi.'); return; }
+    openConfirm({
+      title:"Yakin Reset Semua Data?",
+      body:"Semua pendaftar, drawing, bracket, jadwal, dan pengeluaran akan hilang permanen. Pastikan sudah download backup dulu kalau perlu.",
+      confirmLabel:"Ya, Hapus Semua", danger:true,
+      onConfirm: resetAllTournamentData
+    });
+  }},"\ud83e\udded Reset Semua Data Turnamen"));
+  sec.appendChild(resetCard);
 
   sec.appendChild(el("div",{class:"section-title", style:"margin-top:20px;"},"Kategori & Kuota"));
   const catCard = el("div",{class:"card"});
