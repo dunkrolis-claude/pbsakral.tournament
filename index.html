@@ -469,6 +469,7 @@ let REG_CACHE = {};    // id -> full record (loaded lazily)
 let ready = false;
 let route = {name:"home", params:{}};
 let adminSession = false;
+let adminCategoryScope = null; // null = full admin; category code = scoped category-admin
 let toastTimer = null;
 
 function uid(){ return Math.random().toString(36).slice(2,10) + Date.now().toString(36); }
@@ -493,7 +494,7 @@ function normalizeWhatsapp(raw){
 
 function defaultMeta(){
   return {
-    settings: { adminPin: "SAKRAL2026", registrationOpen: true, whatsappEnabled: true, scoringTarget: 42, refereeNames: [], publicResultsVisible: false },
+    settings: { adminPin: "SAKRAL2026", registrationOpen: true, whatsappEnabled: true, scoringTarget: 42, refereeNames: [], publicResultsVisible: false, categoryPins: {} },
     categories: DEFAULT_CATEGORIES.map(c => ({...c})),
     counters: {PRM:0, COR:0, RIS:0, QUE:0},
   };
@@ -510,6 +511,7 @@ async function loadMeta(){
       if(!META.settings.scoringTarget) META.settings.scoringTarget = d.settings.scoringTarget;
       if(!META.settings.refereeNames) META.settings.refereeNames = [];
       if(META.settings.publicResultsVisible===undefined) META.settings.publicResultsVisible = false;
+      if(!META.settings.categoryPins) META.settings.categoryPins = {};
       if(!META.categories) META.categories = d.categories;
       META.categories.forEach(c=>{ if(c.prize===undefined){ const dc = d.categories.find(x=>x.code===c.code); c.prize = dc? dc.prize : 0; }
         if(c.bankName===undefined) c.bankName="";
@@ -884,7 +886,7 @@ function topbar(activeTab){
   bar.appendChild(brand);
   const navWrap = el("div",{class:"topnav"});
   if(adminSession){
-    navWrap.appendChild(el("button",{onclick:()=>{ adminSession=false; nav("home"); }},"Keluar"));
+    navWrap.appendChild(el("button",{onclick:()=>{ adminSession=false; adminCategoryScope=null; listFilterCategory="ALL"; nav("home"); }},"Keluar"));
   } else {
     navWrap.appendChild(el("button",{class: activeTab==="home"?"active":"", onclick:()=>nav("home")},"Beranda"));
     navWrap.appendChild(el("button",{class: activeTab==="status"?"active":"", onclick:()=>nav("status")},"Status"));
@@ -1381,10 +1383,17 @@ function renderRegistrationStatusCard(reg){
   } else if(reg.status==="REGISTERED"){
     s2.appendChild(renderParticipantMatchCards(reg));
     const c2 = el("div",{class:"card", style:"margin-top:12px;"});
-    c2.appendChild(el("div",{style:"font-weight:800;font-size:13.5px;margin-bottom:8px;"},"Info Deposit Kok"));
+    c2.appendChild(el("div",{style:"font-weight:800;font-size:13.5px;margin-bottom:8px;"},"\ud83e\uddfe Rincian Biaya"));
+    c2.appendChild(el("div",{class:"kv"},[el("span",{class:"k"},"Biaya Registrasi"),el("span",{class:"v"},rupiah(reg.payment.amountPaid)+" \u2713 Lunas")]));
     if(reg.deposit){
-      c2.appendChild(el("div",{class:"kv"},[el("span",{class:"k"},"Deposit Awal"),el("span",{class:"v"},rupiah(reg.deposit.initial))]));
-      c2.appendChild(el("div",{class:"kv"},[el("span",{class:"k"},"Sisa Deposit"),el("span",{class:"v"},rupiah(reg.deposit.balance))]));
+      const kokUsage = (reg.depositTransactions||[]).filter(t=>t.type==="USAGE").reduce((s,t)=>s+t.amount,0);
+      const topups = (reg.depositTransactions||[]).filter(t=>t.type==="TOPUP").reduce((s,t)=>s+t.amount,0);
+      c2.appendChild(el("div",{class:"kv"},[el("span",{class:"k"},"Deposit Kok (masuk)"),el("span",{class:"v"},rupiah(reg.deposit.initial+topups))]));
+      c2.appendChild(el("div",{class:"kv"},[el("span",{class:"k"},"Pemakaian Kok"),el("span",{class:"v", style:"color:var(--warn);"},"\u2212 "+rupiah(kokUsage))]));
+      c2.appendChild(el("div",{class:"kv"},[el("span",{class:"k"},"Sisa Deposit"),el("span",{class:"v", style: reg.deposit.balance<0?"color:var(--danger);":"color:var(--ok);"},rupiah(reg.deposit.balance))]));
+      if(reg.deposit.balance<0){
+        c2.appendChild(el("div",{class:"flag", style:"margin-top:6px;"},"Ada kekurangan "+rupiah(Math.abs(reg.deposit.balance))+" yang perlu dilunasi ke panitia di lokasi."));
+      }
     } else {
       c2.appendChild(el("div",{class:"kv"},[el("span",{class:"k"},"Deposit Kok"),el("span",{class:"v"},"Rp"+DEPOSIT_FEE.toLocaleString("id-ID")+" tunai saat hari-H")]));
     }
@@ -1620,7 +1629,7 @@ function viewPublicLive(){
   sec.appendChild(el("div",{style:"color:var(--ink-dim);font-size:13px;margin-bottom:14px;"},"Informasi publik turnamen \u2014 tanpa perlu login."));
 
   const subTabs = el("div",{class:"tabs"});
-  [["aturan","Aturan"],["jadwal","Jadwal"],["bagan","Bagan"],["hasil","Hasil"]].forEach(([key,label])=>{
+  [["aturan","Aturan"],["live","Live"],["jadwal","Jadwal"],["bagan","Bagan"],["hasil","Hasil"]].forEach(([key,label])=>{
     subTabs.appendChild(el("button",{class: publicLiveTab===key?"active":"", onclick:()=>{ publicLiveTab=key; render(); }}, label));
   });
   sec.appendChild(subTabs);
@@ -1630,16 +1639,51 @@ function viewPublicLive(){
 
   if(!META.settings.publicResultsVisible){
     const gate = el("div",{class:"section", style:"padding-top:0;"});
-    gate.appendChild(el("div",{class:"flag info"},"Bagan, jadwal, dan hasil pertandingan akan dipublikasikan setelah pengundian (drawing) & technical meeting selesai. Pantau terus ya \u2014 sementara ini kamu bisa lihat Aturan Pertandingan dulu."));
+    gate.appendChild(el("div",{class:"flag info"},"Live, bagan, jadwal, dan hasil pertandingan akan dipublikasikan setelah pengundian (drawing) & technical meeting selesai. Pantau terus ya \u2014 sementara ini kamu bisa lihat Aturan Pertandingan dulu."));
     wrap.appendChild(gate);
     return wrap;
   }
 
-  if(publicLiveTab==="jadwal") wrap.appendChild(renderPublicJadwal());
+  if(publicLiveTab==="live") wrap.appendChild(renderPublicNowPlaying());
+  else if(publicLiveTab==="jadwal") wrap.appendChild(renderPublicJadwal());
   else if(publicLiveTab==="bagan") wrap.appendChild(renderPublicBagan());
   else wrap.appendChild(renderPublicHasil());
 
   return wrap;
+}
+
+function renderPublicNowPlaying(){
+  const sec = el("div",{class:"section", style:"padding-top:0;"});
+  sec.appendChild(el("div",{style:"color:var(--ink-dim);font-size:12.5px;margin-bottom:12px;"},"Pertandingan yang sedang berlangsung sekarang, per lapangan."));
+  let anyLive = false;
+  COURTS.forEach(court=>{
+    let live = null;
+    for(const s of SCHEDULE){
+      if(s.court!==court) continue;
+      const m = matchById(s.category, s.matchId);
+      if(m && (m.status==="ON_COURT" || m.status==="CALLING")){ live = {s,m}; break; }
+    }
+    const box = el("div",{class:"mc-card"});
+    const top = el("div",{class:"mc-top"});
+    top.appendChild(el("div",{class:"mc-meta"},"Lapangan "+court));
+    if(live) top.appendChild(mcStatusBadge(live.m.status));
+    box.appendChild(top);
+    if(live){
+      anyLive = true;
+      const cat = catByCode(live.m.category);
+      box.appendChild(el("div",{style:`font-size:11px;color:var(${cat.accentVar});font-weight:800;margin-bottom:4px;`}, cat.name+" \u00b7 "+ROUND_LABELS[live.m.round]+" #"+live.m.matchNo));
+      box.appendChild(el("div",{class:"mc-side"}, matchSideLabel(live.m.category, live.m.sideA)));
+      box.appendChild(el("div",{class:"m-vs"},"vs"));
+      box.appendChild(el("div",{class:"mc-side"}, matchSideLabel(live.m.category, live.m.sideB)));
+    } else {
+      box.appendChild(el("div",{style:"font-size:12.5px;color:var(--ink-faint);padding:8px 0;"},"Kosong / belum ada match berlangsung."));
+    }
+    sec.appendChild(box);
+  });
+  if(!anyLive){
+    sec.appendChild(el("div",{class:"flag info", style:"margin-top:6px;"},"Belum ada pertandingan yang sedang berlangsung."));
+  }
+  return sec;
 }
 
 function renderPublicRules(){
@@ -1744,9 +1788,14 @@ function renderPublicHasil(){
     row.appendChild(top);
     const isWinnerA = m.winnerParticipantId===m.sideA.participantId;
     const isWinnerB = m.winnerParticipantId===m.sideB.participantId;
-    row.appendChild(el("div",{class:"m-side", style:isWinnerA?"color:var(--gold-bright);":""}, matchSideLabel(m.category, m.sideA)));
+    const clubA = m.sideA.type==="participant" && m.sideA.participantId ? (regSummary(m.sideA.participantId)||{}).club : "";
+    const clubB = m.sideB.type==="participant" && m.sideB.participantId ? (regSummary(m.sideB.participantId)||{}).club : "";
+    row.appendChild(el("div",{class:"m-side", style:isWinnerA?"color:var(--gold-bright);":""}, matchSideLabel(m.category, m.sideA)+(clubA?" ("+clubA+")":"")));
     row.appendChild(el("div",{class:"m-vs"}, m.status==="WO" ? "WO" : m.scoreA+" - "+m.scoreB));
-    row.appendChild(el("div",{class:"m-side", style:isWinnerB?"color:var(--gold-bright);":""}, matchSideLabel(m.category, m.sideB)));
+    row.appendChild(el("div",{class:"m-side", style:isWinnerB?"color:var(--gold-bright);":""}, matchSideLabel(m.category, m.sideB)+(clubB?" ("+clubB+")":"")));
+    if(m.kokCount){
+      row.appendChild(el("div",{style:"text-align:center;font-size:10.5px;color:var(--ink-faint);margin-top:4px;"},"\ud83c\udff8 "+m.kokCount+" kok terpakai"));
+    }
     sec.appendChild(row);
   });
   return sec;
@@ -1768,12 +1817,23 @@ function viewAdminLogin(){
   return wrap;
 }
 function tryLogin(val){
-  if(val === META.settings.adminPin){ adminSession = true; nav("admin-dashboard"); }
-  else { showToast("Kode akses salah."); }
+  if(val === META.settings.adminPin){ adminSession = true; adminCategoryScope = null; nav("admin-dashboard"); return; }
+  const catMatch = META.categories.find(cat => META.settings.categoryPins[cat.code] && val === META.settings.categoryPins[cat.code]);
+  if(catMatch){ adminSession = true; adminCategoryScope = catMatch.code; nav("admin-list"); return; }
+  showToast("Kode akses salah.");
 }
 
 /* ============ ADMIN: LAYOUT ============ */
 function adminTabs(active){
+  if(adminCategoryScope){
+    const cat = catByCode(adminCategoryScope);
+    const wrap = el("div",{class:"tabs"});
+    wrap.appendChild(el("div",{style:`font-family:'Anton';font-size:14px;color:var(${cat.accentVar});padding:8px 4px;white-space:nowrap;`},"Admin "+cat.name));
+    [["admin-list","Pendaftar Saya"]].forEach(([key,label])=>{
+      wrap.appendChild(el("button",{class: active===key?"active":"", onclick:()=>nav(key)},label));
+    });
+    return wrap;
+  }
   const tabs = [
     ["admin-dashboard","Dashboard"],
     ["admin-list","Pendaftar"],
@@ -1878,9 +1938,9 @@ function viewAdminList(){
   wrap.appendChild(topbar("admin"));
   const sec = el("div",{class:"section"});
   sec.appendChild(adminTabs("admin-list"));
-  sec.appendChild(el("div",{class:"section-title"},"Daftar Pendaftar"));
+  sec.appendChild(el("div",{class:"section-title"}, adminCategoryScope? "Pendaftar "+catByCode(adminCategoryScope).name : "Daftar Pendaftar"));
 
-  sec.appendChild(el("button",{class:"btn btn-gold btn-block", style:"margin-bottom:14px;", onclick:()=>{ resetManualEntryForm(); nav("admin-manual-entry"); }},"\ud83d\udcac Input Peserta Manual (dari WhatsApp)"));
+  sec.appendChild(el("button",{class:"btn btn-gold btn-block", style:"margin-bottom:14px;padding:16px;font-size:15px;", onclick:()=>{ resetManualEntryForm(adminCategoryScope||""); nav("admin-manual-entry"); }},"\ud83d\udcac Input Peserta Baru"));
 
   const searchBox = el("div",{class:"search-box"});
   const input = el("input",{placeholder:"Cari nomor, nama, klub, whatsapp...", value:listSearch});
@@ -1888,12 +1948,16 @@ function viewAdminList(){
   searchBox.appendChild(input);
   sec.appendChild(searchBox);
 
-  const catTabs = el("div",{class:"tabs"});
-  ["ALL",...META.categories.map(c=>c.code)].forEach(code=>{
-    catTabs.appendChild(el("button",{class: listFilterCategory===code?"active":"", onclick:()=>{ listFilterCategory=code; render(); }},
-      code==="ALL"?"Semua Kategori":catByCode(code).name));
-  });
-  sec.appendChild(catTabs);
+  if(adminCategoryScope){
+    listFilterCategory = adminCategoryScope;
+  } else {
+    const catTabs = el("div",{class:"tabs"});
+    ["ALL",...META.categories.map(c=>c.code)].forEach(code=>{
+      catTabs.appendChild(el("button",{class: listFilterCategory===code?"active":"", onclick:()=>{ listFilterCategory=code; render(); }},
+        code==="ALL"?"Semua Kategori":catByCode(code).name));
+    });
+    sec.appendChild(catTabs);
+  }
 
   const statusTabs = el("div",{class:"tabs"});
   const statuses = ["ALL","WAITING_VALIDATION","DATA_REVISION_REQUESTED","WAITING_CATEGORY_CONFIRMATION","WAITING_PAYMENT","WAITING_VERIFICATION","REGISTERED","WAITING_LIST","REJECTED"];
@@ -1942,35 +2006,44 @@ let manualEntryState = {};
 function resetManualEntryForm(presetCat){
   manualEntryState = {
     category: presetCat||"", player1:"", player2:"", club:"", whatsapp:"", domicile:"", note:"",
-    paymentMethod:"TRANSFER", markPaid:true
+    alreadyPaid:false, paymentMethod:"TRANSFER"
   };
 }
 function viewAdminManualEntry(){
-  if(!manualEntryState.category) resetManualEntryForm();
+  if(!manualEntryState.category) resetManualEntryForm(adminCategoryScope||"");
   const wrap = el("div",{});
   wrap.appendChild(topbar("admin"));
   wrap.appendChild(backRow(()=>nav("admin-list")));
   const sec = el("div",{class:"section"});
   sec.appendChild(el("h2",{style:"font-size:20px;margin:0 0 4px;"},"Input Peserta Manual"));
-  sec.appendChild(el("div",{style:"color:var(--ink-dim);font-size:13px;margin-bottom:16px;"},"Untuk pendaftar yang sudah dikonfirmasi & bayar lewat WhatsApp. Peserta akan langsung dibuat resmi (kecuali kuota kategori penuh)."));
+  sec.appendChild(el("div",{style:"color:var(--ink-dim);font-size:13px;margin-bottom:16px;"},"Untuk pendaftar yang sudah dikonfirmasi lewat WhatsApp. Bisa disimpan dulu sebagai \"diterima, belum bayar\", atau langsung lunas kalau sudah transfer."));
 
   const card = el("div",{class:"card"});
 
-  const catField = el("div",{class:"field"});
-  catField.appendChild(el("label",{},"Kategori"));
-  const radios = el("div",{class:"radio-cats"});
-  META.categories.forEach(cat=>{
-    const full = isQuotaFull(cat.code);
-    const selected = manualEntryState.category===cat.code;
-    const rc = el("div",{class:"radio-cat"+(selected?" selected":"")+(full?"":""), style:`--accent2:var(${cat.accentVar})`,
-      onclick: ()=>{ manualEntryState.category=cat.code; render(); }
+  if(adminCategoryScope){
+    const cat = catByCode(adminCategoryScope);
+    manualEntryState.category = adminCategoryScope;
+    card.appendChild(el("div",{class:"card", style:`border-color:var(${cat.accentVar});margin-bottom:14px;padding:12px;`},[
+      el("div",{style:"font-size:11px;color:var(--ink-faint);"},"Kategori"),
+      el("div",{style:`font-family:'Anton';font-size:18px;color:var(${cat.accentVar});`}, cat.name)
+    ]));
+  } else {
+    const catField = el("div",{class:"field"});
+    catField.appendChild(el("label",{},"Kategori"));
+    const radios = el("div",{class:"radio-cats"});
+    META.categories.forEach(cat=>{
+      const full = isQuotaFull(cat.code);
+      const selected = manualEntryState.category===cat.code;
+      const rc = el("div",{class:"radio-cat"+(selected?" selected":"")+(full?"":""), style:`--accent2:var(${cat.accentVar})`,
+        onclick: ()=>{ manualEntryState.category=cat.code; render(); }
+      });
+      rc.appendChild(el("div",{class:"rc-name", style:`color:var(${cat.accentVar})`},cat.name));
+      rc.appendChild(el("div",{class:"rc-fee"}, full? "Kuota penuh (masuk waiting list)" : rupiah(cat.fee)+"/pasangan"));
+      radios.appendChild(rc);
     });
-    rc.appendChild(el("div",{class:"rc-name", style:`color:var(${cat.accentVar})`},cat.name));
-    rc.appendChild(el("div",{class:"rc-fee"}, full? "Kuota penuh (masuk waiting list)" : rupiah(cat.fee)+"/pasangan"));
-    radios.appendChild(rc);
-  });
-  catField.appendChild(radios);
-  card.appendChild(catField);
+    catField.appendChild(radios);
+    card.appendChild(catField);
+  }
 
   function manualField(label, key, placeholder, type){
     const f = el("div",{class:"field"});
@@ -1992,16 +2065,34 @@ function viewAdminManualEntry(){
   noteField.appendChild(noteInput);
   card.appendChild(noteField);
 
-  const methodField = el("div",{class:"field"});
-  methodField.appendChild(el("label",{},"Metode Pembayaran"));
-  const seg = el("div",{class:"seg"});
-  const btnT = el("button",{class: manualEntryState.paymentMethod==="TRANSFER"?"active":"", type:"button"},"Transfer/QRIS");
-  const btnC = el("button",{class: manualEntryState.paymentMethod==="CASH"?"active":"", type:"button"},"Tunai");
-  seg.appendChild(btnT); seg.appendChild(btnC);
-  btnT.addEventListener("click",()=>{ manualEntryState.paymentMethod="TRANSFER"; btnT.className="active"; btnC.className=""; });
-  btnC.addEventListener("click",()=>{ manualEntryState.paymentMethod="CASH"; btnC.className="active"; btnT.className=""; });
-  methodField.appendChild(seg);
-  card.appendChild(methodField);
+  const paidField = el("div",{class:"field"});
+  paidField.appendChild(el("label",{},"Status Pembayaran"));
+  const paidSeg = el("div",{class:"seg"});
+  const btnBelum = el("button",{class: !manualEntryState.alreadyPaid?"active":"", type:"button"},"Diterima, Belum Bayar");
+  const btnLunas = el("button",{class: manualEntryState.alreadyPaid?"active":"", type:"button"},"Sudah Lunas");
+  paidSeg.appendChild(btnBelum); paidSeg.appendChild(btnLunas);
+  paidField.appendChild(paidSeg);
+  card.appendChild(paidField);
+
+  const methodArea = el("div",{});
+  card.appendChild(methodArea);
+  function renderMethodArea(){
+    methodArea.innerHTML = "";
+    if(!manualEntryState.alreadyPaid) return;
+    const methodField = el("div",{class:"field"});
+    methodField.appendChild(el("label",{},"Metode Pembayaran"));
+    const seg = el("div",{class:"seg"});
+    const btnT = el("button",{class: manualEntryState.paymentMethod==="TRANSFER"?"active":"", type:"button"},"Transfer/QRIS");
+    const btnC = el("button",{class: manualEntryState.paymentMethod==="CASH"?"active":"", type:"button"},"Tunai");
+    seg.appendChild(btnT); seg.appendChild(btnC);
+    btnT.addEventListener("click",()=>{ manualEntryState.paymentMethod="TRANSFER"; btnT.className="active"; btnC.className=""; });
+    btnC.addEventListener("click",()=>{ manualEntryState.paymentMethod="CASH"; btnC.className="active"; btnT.className=""; });
+    methodField.appendChild(seg);
+    methodArea.appendChild(methodField);
+  }
+  btnBelum.addEventListener("click",()=>{ manualEntryState.alreadyPaid=false; btnBelum.className="active"; btnLunas.className=""; renderMethodArea(); });
+  btnLunas.addEventListener("click",()=>{ manualEntryState.alreadyPaid=true; btnLunas.className="active"; btnBelum.className=""; renderMethodArea(); });
+  renderMethodArea();
 
   const errBox = el("div",{});
   card.appendChild(errBox);
@@ -2022,6 +2113,7 @@ function viewAdminManualEntry(){
     const regNo = nextRegNo(cat);
     const nowT = nowIso();
     const full = isQuotaFull(s.category);
+    const paid = s.alreadyPaid && !full;
     const reg = {
       id: uid(), regNo, category: s.category, pendingCategory: null,
       player1: s.player1.trim(), player2: s.player2.trim(), player1PhotoUrl:"", player2PhotoUrl:"",
@@ -2030,10 +2122,10 @@ function viewAdminManualEntry(){
       domicile: s.domicile.trim(), note: (s.note||"").trim() ? (s.note.trim()+" (Input manual via WA oleh panitia)") : "Didaftarkan manual oleh panitia via WhatsApp.",
       verificationVideo: { type:"link", value:"" },
       rulesAccepted: true, rulesAcceptedAt: nowT, categoryRulesVersion: CATEGORY_RULES_VERSION,
-      status: full ? "WAITING_LIST" : "REGISTERED",
+      status: full ? "WAITING_LIST" : (paid ? "REGISTERED" : "WAITING_PAYMENT"),
       adminNote: "", createdAt: nowT, updatedAt: nowT,
-      payment: { method: s.paymentMethod, amountDue: cat.fee, amountPaid: full?0:cat.fee, senderName: s.player1.trim(), proofDataUrl:"", status: full?"UNPAID":"PAID", verifiedBy: full?"":"Admin (input manual)", verifiedAt: full?"":nowT },
-      participant: full ? null : { createdAt: nowT },
+      payment: { method: paid?s.paymentMethod:"", amountDue: cat.fee, amountPaid: paid?cat.fee:0, senderName: paid?s.player1.trim():"", proofDataUrl:"", status: paid?"PAID":"UNPAID", verifiedBy: paid?"Admin (input manual)":"", verifiedAt: paid?nowT:"" },
+      participant: paid ? { createdAt: nowT } : null,
       deposit: null, depositTransactions: [], notifications: [],
     };
     if(full){
@@ -2042,13 +2134,15 @@ function viewAdminManualEntry(){
           message: "Halo "+reg.player1+"/"+reg.player2+", pendaftaran kategori "+cat.name+" sudah kami catat. Kode pemain kamu: *"+regNo+"*. Saat ini kuota penuh sehingga kamu masuk WAITING LIST \u2014 kami hubungi lagi kalau ada slot kosong.",
           status:"QUEUED", createdAt: nowT, sentAt:"", errorMessage:"", providerMessageId:"" });
       }
-    } else {
+    } else if(paid){
       pushNotification(reg, "PAYMENT_VERIFIED");
+    } else {
+      pushNotification(reg, "REGISTRATION_ACCEPTED");
     }
     await saveMeta();
     const ok = await persistReg(reg);
     if(!ok) return;
-    showToast(full ? "Pendaftar masuk waiting list (kuota penuh)." : "Peserta resmi berhasil dibuat.");
+    showToast(full ? "Pendaftar masuk waiting list (kuota penuh)." : (paid ? "Peserta resmi berhasil dibuat." : "Peserta diterima, menunggu pembayaran."));
     nav("admin-detail",{id:reg.id});
   }},"Simpan Peserta"));
 
@@ -2071,6 +2165,10 @@ function viewAdminDetail(params){
   const reg = REG_CACHE[params.id];
   if(reg===undefined){ ensureRegLoaded(params.id); wrap.appendChild(loadingBlock()); return wrap; }
   if(reg===null){ wrap.appendChild(el("div",{class:"section"},[el("div",{class:"empty"},"Pendaftar tidak ditemukan.")])); return wrap; }
+  if(adminCategoryScope && reg.category!==adminCategoryScope){
+    wrap.appendChild(el("div",{class:"section"},[el("div",{class:"flag"},"Kamu tidak punya akses ke pendaftar kategori lain.")]));
+    return wrap;
+  }
 
   const cat = catByCode(reg.category);
   const sec = el("div",{class:"section"});
@@ -3688,13 +3786,28 @@ function viewAdminSettings(){
   pinInput.addEventListener("change", async (e)=>{ META.settings.adminPin = e.target.value || META.settings.adminPin; await saveMeta(); showToast("Kode akses diperbarui."); });
   pinField.appendChild(pinInput);
   card.appendChild(pinField);
+  sec.appendChild(card);
 
+  sec.appendChild(el("div",{class:"section-title", style:"margin-top:20px;"},"Kode Akses Admin per Kategori"));
+  const catPinCard = el("div",{class:"card"});
+  catPinCard.appendChild(el("div",{style:"font-size:12.5px;color:var(--ink-dim);margin-bottom:12px;"},"Kasih kode akses ke tiap PJ kategori supaya mereka bisa input peserta sendiri lewat HP masing-masing, tanpa lihat kategori lain atau menu admin lengkap."));
+  META.categories.forEach((cat,idx)=>{
+    const row = el("div",{style:"padding:8px 0;"+(idx<META.categories.length-1?"border-bottom:1px solid var(--line);":"")});
+    row.appendChild(el("label",{style:`font-size:12px;font-weight:700;color:var(${cat.accentVar});`}, "Admin "+cat.name));
+    const pinInput2 = el("input",{type:"text", placeholder:"Kosongkan = nonaktif", value: META.settings.categoryPins[cat.code]||"", style:"width:100%;background:var(--bg-elev);border:1px solid var(--line);border-radius:8px;padding:9px;color:var(--ink);margin-top:6px;"});
+    pinInput2.addEventListener("change", async (e)=>{ META.settings.categoryPins[cat.code] = e.target.value.trim(); await saveMeta(); showToast("Kode admin "+cat.name+" diperbarui."); });
+    row.appendChild(pinInput2);
+    catPinCard.appendChild(row);
+  });
+  sec.appendChild(catPinCard);
+
+  const cardWa = el("div",{class:"card", style:"margin-top:20px;"});
   const targetField = el("div",{class:"field"});
   targetField.appendChild(el("label",{},"Target Skor (Race-to)"));
   const targetInput = el("input",{type:"number", value: META.settings.scoringTarget||42});
   targetInput.addEventListener("change", async (e)=>{ META.settings.scoringTarget = Number(e.target.value)||42; await saveMeta(); showToast("Target skor diperbarui."); });
   targetField.appendChild(targetInput);
-  card.appendChild(targetField);
+  cardWa.appendChild(targetField);
 
   const toggleRow = el("div",{class:"toggle-row"});
   toggleRow.appendChild(el("div",{},[
@@ -3705,9 +3818,9 @@ function viewAdminSettings(){
   sw.appendChild(el("div",{class:"knob"}));
   sw.addEventListener("click", async ()=>{ META.settings.whatsappEnabled = !META.settings.whatsappEnabled; await saveMeta(); render(); });
   toggleRow.appendChild(sw);
-  card.appendChild(toggleRow);
-  card.appendChild(el("div",{class:"flag info"},"Pengiriman WhatsApp di sini bersifat manual (membuka wa.me dengan pesan siap kirim) karena kredensial WhatsApp Business API perlu disimpan di server, bukan di aplikasi sisi klien ini — sesuai ketentuan addendum bahwa credential tidak boleh ditanam di source code."));
-  sec.appendChild(card);
+  cardWa.appendChild(toggleRow);
+  cardWa.appendChild(el("div",{class:"flag info"},"Pengiriman WhatsApp di sini bersifat manual (membuka wa.me dengan pesan siap kirim) karena kredensial WhatsApp Business API perlu disimpan di server, bukan di aplikasi sisi klien ini — sesuai ketentuan addendum bahwa credential tidak boleh ditanam di source code."));
+  sec.appendChild(cardWa);
 
   sec.appendChild(el("div",{class:"section-title", style:"margin-top:20px;"},"Publikasi Bagan & Jadwal"));
   const pubCard = el("div",{class:"card"});
@@ -3865,6 +3978,10 @@ function render(){
     return;
   }
   let view;
+  const SCOPED_ALLOWED = ["admin-list","admin-manual-entry","admin-detail"];
+  if(adminSession && adminCategoryScope && route.name.startsWith("admin-") && !SCOPED_ALLOWED.includes(route.name)){
+    route = {name:"admin-list", params:{}};
+  }
   switch(route.name){
     case "home": view = viewHome(); break;
     case "register": view = viewRegister(route.params); break;
