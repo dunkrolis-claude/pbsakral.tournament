@@ -2334,31 +2334,36 @@ function viewAdminDetail(params){
     }
     actions.appendChild(row2);
   } else if(reg.status==="WAITING_VERIFICATION"){
-    const row = el("div",{style:"display:flex;gap:10px;"});
+    actions.appendChild(el("div",{class:"flag info"},"Data lama (dari alur sebelumnya) \u2014 bukti pembayaran sudah masuk: "+rupiah(reg.payment.amountPaid)+" dari "+(reg.payment.senderName||"-")+". Verifikasi di bawah untuk lanjut mengikuti alur baru (kode peserta akan dibuat)."));
+    const row = el("div",{style:"display:flex;gap:10px;margin-top:10px;"});
     row.appendChild(el("button",{class:"btn btn-ok", style:"flex:1;", onclick:()=>openConfirm({
       title:"Verifikasi Pembayaran?",
-      body:"Peserta akan resmi terdaftar. Deposit kok dikumpulkan terpisah secara tunai saat hari-H.",
+      body:"Kode peserta akan dibuat sekarang (sesuai urutan pembayaran) dan peserta resmi terdaftar. Deposit kok dikumpulkan terpisah secara tunai saat hari-H.",
       confirmLabel:"Verifikasi",
       onConfirm: async ()=>{
-        reg.status="REGISTERED";
-        reg.payment.status="PAID";
-        reg.payment.verifiedBy="Admin";
-        reg.payment.verifiedAt=nowIso();
-        reg.participant = { createdAt: nowIso() };
-        pushNotification(reg, "PAYMENT_VERIFIED");
-        await persistReg(reg);
-        showToast("Pembayaran diverifikasi. Peserta resmi dibuat.");
+        const cat = catByCode(reg.category);
+        const nowT = nowIso();
+        reg.regNo = nextRegNo(cat);
+        reg.status = "REGISTERED";
+        reg.payment.status = "PAID";
+        reg.payment.verifiedBy = "Admin";
+        reg.payment.verifiedAt = nowT;
+        reg.participant = { createdAt: nowT };
+        await saveMeta();
+        const ok = await persistReg(reg);
+        if(!ok) return;
+        paidReceipt = { id: reg.id, regNo: reg.regNo, name: reg.player1+" / "+reg.player2, category: cat.name, amount: reg.payment.amountPaid, method: reg.payment.method };
         render();
       }
     })},"Verifikasi"));
     row.appendChild(el("button",{class:"btn btn-danger", style:"flex:1;", onclick:()=>openConfirm({
       title:"Tolak Bukti Pembayaran?",
-      body:"Peserta perlu mengunggah ulang bukti pembayaran yang valid.",
+      body:"Peserta kembali ke status Belum Bayar; panitia dapat minta bukti/transfer ulang lewat WA.",
       confirmLabel:"Tolak", danger:true,
       onConfirm: async ()=>{
         reg.status="WAITING_PAYMENT"; reg.payment.status="UNPAID";
         await persistReg(reg);
-        showToast("Bukti pembayaran ditolak.");
+        showToast("Bukti pembayaran ditolak, kembali ke status Belum Bayar.");
         render();
       }
     })},"Tolak Bukti"));
@@ -4048,6 +4053,59 @@ async function resetAllTournamentData(){
   }catch(e){ console.error(e); showToast("Gagal mereset data. Coba lagi."); }
 }
 
+let pendingImportBackup = null; // parsed backup object, waiting for confirmation
+function readBackupFile(file){
+  const reader = new FileReader();
+  reader.onload = (e)=>{
+    try{
+      const parsed = JSON.parse(e.target.result);
+      if(!parsed || !Array.isArray(parsed.registrations) || !parsed.meta){
+        showToast("File backup tidak valid atau rusak.");
+        return;
+      }
+      pendingImportBackup = parsed;
+      render();
+    }catch(err){ showToast("Gagal membaca file backup. Pastikan file JSON hasil export dari sistem ini."); }
+  };
+  reader.readAsText(file);
+}
+async function confirmImportBackup(){
+  const backup = pendingImportBackup;
+  if(!backup) return;
+  try{
+    showToast("Memulihkan data dari backup...");
+    // wipe current data first so the restore is an exact snapshot, not a merge
+    const snap = await getDocs(collection(db,"registrations"));
+    for(const d of snap.docs){ await deleteDoc(doc(db,"registrations",d.id)); }
+    const idxSnap = await getDocs(collection(db,"index"));
+    for(const d of idxSnap.docs){ await deleteDoc(doc(db,"index",d.id)); }
+    const expSnap = await getDocs(collection(db,"expenses"));
+    for(const d of expSnap.docs){ await deleteDoc(doc(db,"expenses",d.id)); }
+
+    for(const reg of backup.registrations){
+      await setDoc(doc(db,"registrations",reg.id), reg);
+      await setDoc(doc(db,"index",reg.id), indexSummary(reg));
+    }
+    for(const exp of (backup.expenses||[])){
+      await setDoc(doc(db,"expenses",exp.id), exp);
+    }
+    META = backup.meta;
+    DRAWING = backup.drawing || {};
+    MATCHES = backup.matches || {};
+    SCHEDULE = backup.schedule || [];
+    await saveMeta(); await saveDrawing(); await saveMatches(); await saveSchedule();
+
+    INDEX = backup.registrations.map(indexSummary);
+    REG_CACHE = {};
+    backup.registrations.forEach(r=>{ REG_CACHE[r.id] = r; });
+    EXPENSES = (backup.expenses||[]).slice().sort((a,b)=>(b.createdAt||"").localeCompare(a.createdAt||""));
+
+    pendingImportBackup = null;
+    showToast("Data berhasil dipulihkan dari backup ("+backup.registrations.length+" pendaftar).");
+    nav("admin-dashboard");
+  }catch(e){ console.error(e); showToast("Gagal memulihkan backup. Coba lagi."); }
+}
+
 function viewAdminSettings(){
   const wrap = el("div",{});
   wrap.appendChild(topbar("admin"));
@@ -4176,6 +4234,14 @@ function viewAdminSettings(){
   backupCard.appendChild(el("button",{class:"btn btn-info btn-block", onclick: exportFullBackup},"\u2b07\ufe0f Download Backup Data (JSON)"));
   sec.appendChild(backupCard);
 
+  const importCard = el("div",{class:"card", style:"margin-top:10px;"});
+  importCard.appendChild(el("div",{style:"font-weight:800;font-size:13.5px;margin-bottom:6px;"},"Pulihkan dari Backup"));
+  importCard.appendChild(el("div",{style:"font-size:12.5px;color:var(--ink-dim);margin-bottom:12px;"},"Upload file backup JSON yang pernah di-download. Data saat ini akan DIGANTI TOTAL dengan isi backup \u2014 pakai ini kalau kejadian data hilang/reset tidak sengaja."));
+  const fileInput = el("input",{type:"file", accept:"application/json,.json"});
+  fileInput.addEventListener("change",(e)=>{ const f = e.target.files[0]; if(f) readBackupFile(f); });
+  importCard.appendChild(fileInput);
+  sec.appendChild(importCard);
+
   const resetCard = el("div",{class:"card", style:"margin-top:10px;border-color:var(--danger);"});
   resetCard.appendChild(el("div",{style:"font-weight:800;color:var(--danger);font-size:13.5px;margin-bottom:6px;"},"\u26a0\ufe0f Zona Berbahaya"));
   resetCard.appendChild(el("div",{style:"font-size:12.5px;color:var(--ink-dim);margin-bottom:12px;"},"Hapus SEMUA pendaftar, drawing, bracket, jadwal, dan pengeluaran \u2014 dipakai untuk membersihkan data test/uji coba sebelum turnamen benar-benar mulai. Kategori, kuota, rekening, dan kode akses admin TIDAK ikut terhapus. Tindakan ini permanen."));
@@ -4246,7 +4312,27 @@ function viewAdminSettings(){
   sec.appendChild(el("div",{class:"footer-note", style:"margin-top:22px;"},"Phase 1 + Addendum Eligibility/WhatsApp. Modul Drawing, Bracket, Schedule, Match Control, dan LED Display menyusul pada rilis berikutnya sesuai roadmap PRD, tanpa perlu memindahkan data peserta yang sudah ada."));
 
   wrap.appendChild(sec);
+  if(pendingImportBackup) wrap.appendChild(renderImportBackupModal());
   return wrap;
+}
+
+function renderImportBackupModal(){
+  const b = pendingImportBackup;
+  const overlay = el("div",{class:"modal-overlay", onclick:(e)=>{ if(e.target===overlay){ pendingImportBackup=null; render(); } }});
+  const modal = el("div",{class:"modal"});
+  modal.appendChild(el("h3",{},"\u26a0\ufe0f Pulihkan dari Backup Ini?"));
+  const card = el("div",{class:"card", style:"margin-bottom:14px;"});
+  card.appendChild(el("div",{class:"kv"},[el("span",{class:"k"},"Tanggal Backup"),el("span",{class:"v"},fmtDate(b.exportedAt))]));
+  card.appendChild(el("div",{class:"kv"},[el("span",{class:"k"},"Jumlah Pendaftar"),el("span",{class:"v"},String(b.registrations.length))]));
+  card.appendChild(el("div",{class:"kv"},[el("span",{class:"k"},"Jumlah Pengeluaran"),el("span",{class:"v"},String((b.expenses||[]).length))]));
+  modal.appendChild(card);
+  modal.appendChild(el("div",{class:"flag warn", style:"margin-bottom:14px;"},"SEMUA data yang ada di sistem SEKARANG (kalau ada) akan diganti total dengan isi backup ini. Tindakan ini tidak bisa dibatalkan."));
+  const actions = el("div",{class:"modal-actions"});
+  actions.appendChild(el("button",{class:"btn btn-outline", onclick:()=>{ pendingImportBackup=null; render(); }},"Batal"));
+  actions.appendChild(el("button",{class:"btn", style:"background:var(--danger);color:#fff;", onclick: confirmImportBackup},"Ya, Pulihkan Data Ini"));
+  modal.appendChild(actions);
+  overlay.appendChild(modal);
+  return overlay;
 }
 
 /* ============ CONFIRM MODAL ============ */
