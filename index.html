@@ -2074,7 +2074,7 @@ async function tryLogin(val){
   if(!scope){ showToast("Kode akses salah."); return; }
   adminSession = true;
   adminCategoryScope = (scope==="SUPER") ? null : scope;
-  await loadPhase2(); // admin can now see drawing/matches/schedule regardless of public_results_visible
+  await Promise.all([loadIndex(), loadPhase2()]); // admin can now load registrations + phase2 data
   nav(adminCategoryScope ? "admin-list" : "admin-dashboard");
 }
 
