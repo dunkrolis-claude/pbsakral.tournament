@@ -119,6 +119,8 @@
   .cat-card .cat-fee{font-size:15px;font-weight:800;color:var(--ink);}
   .cat-card .cat-fee small{font-size:10.5px;color:var(--ink-faint);font-weight:600;}
   .cat-card .cat-quota{margin-top:10px;font-size:11.5px;color:var(--ink-dim);}
+  .cat-card .cat-quota-error{color:var(--danger);}
+  .cat-card .cat-quota-error .btn{display:block;}
   .quota-bar{height:5px;border-radius:4px;background:var(--line);margin-top:5px;overflow:hidden;}
   .quota-bar-fill{height:100%;background:var(--accent);}
 
@@ -358,7 +360,7 @@
    used exclusively inside /api/admin-*.js (see supabaseServer.js). */
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.0";
 
-const SUPABASE_URL = "https://mqbwxiqvbwafyxuij.supabase.co";
+const SUPABASE_URL = "https://mqbwxiqvbwxbwafyxuij.supabase.co";
 const SUPABASE_ANON_KEY = "sb_publishable_9XyxOldm5bXbN8xb9YHonA_F5M-Mcx1"; // public/publishable key — safe in browser, not service_role
 
 const sb = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, { auth: { persistSession: false } });
@@ -559,6 +561,7 @@ function roundNamesFor(quota){ return quota===64 ? ["R64","R32","R16","QF","SF",
 /* ============ STATE ============ */
 let META = null;      // {settings, categories, counters}
 let INDEX = [];        // lightweight list of registration summaries
+let publicIndexError = false; // true only when the public loadIndex() read actually failed (distinct from a genuinely empty INDEX)
 let REG_CACHE = {};    // id -> full record (loaded lazily)
 let ready = false;
 let route = {name:"home", params:{}};
@@ -647,7 +650,25 @@ async function loadIndex(){
       if(error) throw error;
       INDEX = data.map(r=>({ id:r.id, regNo:r.reg_no, category:r.category, status:r.status, player1:r.player1, player2:r.player2, club:r.club, whatsapp:"", createdAt:r.created_at, updatedAt:r.created_at, paymentAmountDue:0, paymentAmountPaid:0, paymentStatus:"", paymentMethod:"", depositInitial:0, depositBalance:0, isDemo:false }));
     }
-  }catch(e){ console.error(e); INDEX = []; }
+    // A load that actually completed — even if it legitimately found zero
+    // rows — is not a failure. Only the catch below means "we don't know
+    // the real counts", so only it sets publicIndexError.
+    publicIndexError = false;
+  }catch(e){
+    console.error(e);
+    INDEX = [];
+    // Only the public (unauthenticated) path drives the homepage quota
+    // cards, so only flag the error for that path — this must not change
+    // Admin Dashboard behavior, which already surfaces its own failures.
+    if(!adminSession) publicIndexError = true;
+  }
+}
+// Minimal retry hook for the public homepage's quota-card error state
+// (see viewHome()) — re-runs the same loadIndex() path and re-renders,
+// no new data-loading architecture or endpoint involved.
+async function retryPublicIndex(){
+  await loadIndex();
+  render();
 }
 // saveIndex() no longer exists: there is no separate "index" table in Supabase.
 // The admin listing is derived live from `registrations` via /api/admin-read
@@ -1172,10 +1193,19 @@ function viewHome(){
     card.appendChild(el("div",{class:"cat-name"},cat.name));
     card.appendChild(el("div",{class:"cat-level"},cat.level));
     card.appendChild(el("div",{class:"cat-fee"},[rupiah(cat.fee), el("small",{}," /pasangan")]));
-    const q = el("div",{class:"cat-quota"},[full? "Kuota penuh — masuk waiting list" : `${committed}/${cat.quota} slot terisi`]);
-    const bar = el("div",{class:"quota-bar"});
-    bar.appendChild(el("div",{class:"quota-bar-fill", style:`width:${Math.min(100,(committed/cat.quota)*100)}%`}));
-    q.appendChild(bar);
+    let q;
+    if(publicIndexError){
+      // Fetch genuinely failed — show that plainly instead of a fabricated
+      // "0/64 slot terisi", and offer a one-tap retry without a page reload.
+      q = el("div",{class:"cat-quota cat-quota-error"},"Gagal memuat data slot.");
+      const retryBtn = el("button",{class:"btn btn-outline btn-sm", style:"margin-top:6px;", onclick:(ev)=>{ ev.stopPropagation(); retryPublicIndex(); }},"Coba lagi");
+      q.appendChild(retryBtn);
+    } else {
+      q = el("div",{class:"cat-quota"},[full? "Kuota penuh — masuk waiting list" : `${committed}/${cat.quota} slot terisi`]);
+      const bar = el("div",{class:"quota-bar"});
+      bar.appendChild(el("div",{class:"quota-bar-fill", style:`width:${Math.min(100,(committed/cat.quota)*100)}%`}));
+      q.appendChild(bar);
+    }
     card.appendChild(q);
     cats.appendChild(card);
   });
