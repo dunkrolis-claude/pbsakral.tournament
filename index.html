@@ -266,6 +266,7 @@
   .sched-cell.empty{color:var(--ink-faint);}
   .sched-cell.filled{background:rgba(212,175,55,0.10);color:var(--gold-bright);}
   .sched-cell.draft{background:transparent;color:var(--ink-dim);border:1px dashed var(--line);cursor:default;}
+  .set-badge{text-align:center;font-family:'Anton';letter-spacing:.12em;font-size:15px;color:var(--ink);margin-bottom:8px;}
   .switch-banner{background:rgba(212,175,55,0.16);border:2px solid var(--gold);border-radius:14px;padding:12px;margin-bottom:12px;text-align:center;animation:swpulse 1.2s ease-in-out infinite;}
   .switch-banner .sb-title{font-family:'Anton';font-size:26px;letter-spacing:.06em;color:var(--gold-bright);}
   .switch-banner .sb-sub{font-size:12.5px;color:var(--ink-dim);}
@@ -288,6 +289,7 @@
   .tv-name{flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
   .tv-score{font-family:'Anton';font-size:3vw;line-height:1.05;min-width:6.2vw;text-align:center;background:#070a13;border-radius:.7vh;padding:0;font-variant-numeric:tabular-nums;color:#e8ecf7;}
   .tv-team.lead .tv-score{background:var(--gold-bright);color:#07090f;}
+  .tv-set{margin-left:1.2vw;border:.2vh solid #5b6682;color:#e8ecf7;border-radius:.5vh;padding:0 .7vw;font-weight:800;font-size:1.15vw;}
   .tv-swb{margin-left:1.2vw;background:#ffb020;color:#000;font-family:'Anton';font-size:1.2vw;letter-spacing:.06em;padding:0 .8vw;border-radius:.5vh;animation:tvcall 1s infinite;}
   .tv-pill{align-self:center;margin-right:1.2vw;font-size:1.2vw;font-weight:800;color:#c7cee0;background:#1a2238;border-radius:99px;padding:.6vh 1.2vw;white-space:nowrap;} .tv-pill.hot{background:#ffb020;color:#000;}
   .tv-idle{align-self:center;color:#6b7590;font-size:1.7vw;}
@@ -4694,11 +4696,12 @@ function viewAdminRefereeScoring(params){
   sec.appendChild(el("div",{style:"text-align:center;color:var(--ink-faint);font-size:11.5px;margin-bottom:2px;"}, cat.name+" \u00b7 "+ROUND_LABELS[m.round]+" #"+m.matchNo));
   if(effectiveReferee(m)) sec.appendChild(el("div",{style:"text-align:center;color:var(--gold-bright);font-size:11.5px;font-weight:700;margin-bottom:10px;"},"\ud83d\udc64 Wasit: "+effectiveReferee(m)));
 
+  sec.appendChild(el("div",{class:"set-badge"}, refSetLabel(ls)));
   if(ls.switchSeen && !ls.switchAck){
     sec.appendChild(el("div",{class:"switch-banner"},[
       el("div",{class:"sb-title"},"TUKAR LAPANGAN"),
-      el("div",{class:"sb-sub"},"Poin pertama sudah mencapai 21. Pemain pindah sisi, skor tetap berlanjut."),
-      el("button",{class:"btn btn-gold btn-block", style:"margin-top:8px;", onclick: async ()=>{ ls.switchAck = true; await saveMatches(); render(); }},"Sudah Tukar Lapangan")
+      el("div",{class:"sb-sub"},"Poin pertama sudah mencapai 21. Pemain pindah sisi, lanjut Set 2. Skor tetap berlanjut."),
+      el("button",{class:"btn btn-gold btn-block", style:"margin-top:8px;", onclick: async ()=>{ ls.switchAck = true; await saveMatches(); render(); }},"Sudah Tukar \u2014 Mulai Set 2")
     ]));
   }
   const court = ls.servingSide==="A" ? (ls.scoreA%2===0?"Kanan":"Kiri") : (ls.scoreB%2===0?"Kanan":"Kiri");
@@ -4757,6 +4760,8 @@ const REF_ERRORS = {
   busy_try_again:"Server sibuk, coba tap lagi.", not_started:"Pertandingan belum dimulai.", score_tied:"Skor sama, tidak bisa diselesaikan.",
   nothing_to_undo:"Tidak ada poin untuk dibatalkan.", unauthorized:"Sesi habis, silakan masuk lagi."
 };
+// Set 1 = sebelum tukar lapangan; Set 2 = setelah pemain tukar (skor tetap berlanjut sampai 42).
+function refSetLabel(ls){ return (ls && ls.switchSeen && ls.switchAck) ? "Set 2" : "Set 1"; }
 function refCourtTitle(){ const c = refereeScope ? refereeScope.slice(6) : ""; return c==="R" ? "Wasit Cadangan · semua lapangan" : "Wasit Lapangan "+c; }
 function refFind(cat, id){ return REF_BOARD ? REF_BOARD.matches.find(m=>m.category===cat && m.id===id) : null; }
 function refSideName(m, key){
@@ -4870,11 +4875,12 @@ function viewRefereeScoring(params){
   const ls = m.liveScoring, target = REF_BOARD.target || 42;
   const sec = el("div",{class:"section"});
   sec.appendChild(el("div",{style:"text-align:center;color:var(--ink-faint);font-size:11.5px;margin-bottom:6px;"}, catByCode(category).name+" · "+(ROUND_LABELS[m.round]||m.round)+" #"+m.matchNo));
+  sec.appendChild(el("div",{class:"set-badge"}, refSetLabel(ls)));
   if(ls.switchSeen && !ls.switchAck){
     sec.appendChild(el("div",{class:"switch-banner"},[
       el("div",{class:"sb-title"},"TUKAR LAPANGAN"),
-      el("div",{class:"sb-sub"},"Poin pertama sudah mencapai 21. Pemain pindah sisi, skor tetap berlanjut."),
-      el("button",{class:"btn btn-gold btn-block", style:"margin-top:8px;", onclick:()=>refCall("REF_ACK_SWITCH",{},category,matchId).then(()=>render())},"Sudah Tukar Lapangan")
+      el("div",{class:"sb-sub"},"Poin pertama sudah mencapai 21. Pemain pindah sisi, lanjut Set 2. Skor tetap berlanjut."),
+      el("button",{class:"btn btn-gold btn-block", style:"margin-top:8px;", onclick:()=>refCall("REF_ACK_SWITCH",{},category,matchId).then(()=>render())},"Sudah Tukar \u2014 Mulai Set 2")
     ]));
   }
   const court = ls.servingSide==="A" ? (ls.scoreA%2===0?"Kanan":"Kiri") : (ls.scoreB%2===0?"Kanan":"Kiri");
@@ -4887,7 +4893,7 @@ function viewRefereeScoring(params){
     ]));
   });
   sec.appendChild(board);
-  sec.appendChild(el("div",{style:"text-align:center;color:var(--ink-faint);font-size:11px;margin-bottom:10px;"},"Target: "+target+" poin · Tukar lapangan di 21 · Tap kotak pasangan yang memenangkan reli"));
+  sec.appendChild(el("div",{style:"text-align:center;color:var(--ink-faint);font-size:11px;margin-bottom:10px;"},"Target: "+target+" poin · Set 1 sampai tukar lapangan di 21, lalu Set 2 · Tap kotak pasangan yang memenangkan reli"));
   const kokRow = el("div",{style:"display:flex;align-items:center;justify-content:center;gap:12px;margin-bottom:16px;"});
   kokRow.appendChild(el("div",{style:"font-size:13px;color:var(--ink-dim);"},["🏸 Kok terpakai: ", el("b",{style:"color:var(--gold-bright);font-size:16px;"}, String(ls.kokCount||1))]));
   kokRow.appendChild(el("button",{class:"btn btn-outline btn-sm", onclick:()=>refCall("REF_KOK",{},category,matchId).then(()=>render())},"+1 Kok Baru"));
@@ -4943,6 +4949,7 @@ function tvCourtRow(court){
     el("span",{}, "  "+(TV_ROUND_SHORT[m.round]||m.round)+"  "+timeLabel(pick.s.timeIndex))
   ]);
   const ls = live && m.liveScoring ? m.liveScoring : null;
+  if(ls) meta.appendChild(el("span",{class:"tv-set"}, refSetLabel(ls)));
   if(ls && ls.switchSeen && !ls.switchAck) meta.appendChild(el("span",{class:"tv-swb"},"TUKAR LAPANGAN"));
   const teamLine = (name, score, serving, lead)=> el("div",{class:"tv-team"+(serving?" serve":"")+(lead?" lead":"")},[
     el("span",{class:"tv-name"}, name),
