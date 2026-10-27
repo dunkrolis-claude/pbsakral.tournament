@@ -266,6 +266,8 @@
   .sched-cell.empty{color:var(--ink-faint);}
   .sched-cell.filled{background:rgba(212,175,55,0.10);color:var(--gold-bright);}
   .sched-cell.draft{background:transparent;color:var(--ink-dim);border:1px dashed var(--line);cursor:default;}
+  .demo-strip{position:sticky;top:0;z-index:50;display:flex;flex-wrap:wrap;gap:8px;align-items:center;justify-content:space-between;background:#ffb020;color:#1a1200;padding:8px 14px;font-size:12.5px;}
+  .demo-strip .btn{color:#1a1200;border-color:#1a1200;}
   .set-badge{text-align:center;font-family:'Anton';letter-spacing:.12em;font-size:15px;color:var(--ink);margin-bottom:8px;}
   .switch-banner{background:rgba(212,175,55,0.16);border:2px solid var(--gold);border-radius:14px;padding:12px;margin-bottom:12px;text-align:center;animation:swpulse 1.2s ease-in-out infinite;}
   .switch-banner .sb-title{font-family:'Anton';font-size:26px;letter-spacing:.06em;color:var(--gold-bright);}
@@ -1291,6 +1293,7 @@ function topbar(activeTab){
   const navWrap = el("div",{class:"topnav"});
   if(adminSession || refereeScope){
     navWrap.appendChild(el("button",{onclick:async ()=>{
+      if(refDemo){ exitRefDemo(); return; }
       try{ await fetch("/api/admin-logout", {method:"POST", credentials:"include"}); }catch(e){ console.error(e); }
       adminSession=false; adminCategoryScope=null; listFilterCategory="ALL"; refereeScope=null; REF_BOARD=null; clearInterval(refBoardTimer);
       await loadIndex(); await loadPhase2(); // refresh to public-safe views now that session is gone
@@ -2243,6 +2246,7 @@ function viewAdminLogin(){
   input.addEventListener("keydown",(e)=>{ if(e.key==="Enter") tryLogin(input.value); });
   pw.appendChild(input);
   pw.appendChild(el("button",{class:"btn btn-gold btn-block", onclick:()=>tryLogin(input.value)},"Masuk"));
+  pw.appendChild(el("button",{class:"btn btn-outline btn-block", style:"margin-top:10px;", onclick:startRefDemo},"Latihan wasit (tanpa kode)"));
   pw.appendChild(el("div",{class:"footer-note"},"Kode akses diverifikasi oleh server (hash tersimpan aman, tidak bisa dilihat/diubah dari sisi klien)."));
   wrap.appendChild(pw);
   return wrap;
@@ -4442,7 +4446,7 @@ async function loadRefAccounts(){ try{ REF_ACCOUNTS = await apiRead("referee_acc
 function renderRefAccountsCard(){
   const card = el("div",{class:"card", style:"margin-bottom:14px;"});
   card.appendChild(el("div",{style:"font-weight:700;margin-bottom:4px;"},"Akun Wasit (login terpisah dari admin)"));
-  card.appendChild(el("div",{style:"color:var(--ink-dim);font-size:12.5px;margin-bottom:10px;"},"Wasit masuk lewat "+location.origin+"/#wasit dengan PIN-nya sendiri. Wasit lapangan hanya melihat dan mengisi skor lapangannya; cadangan bisa semua lapangan. Wasit tidak bisa membuka data pendaftar, keuangan, atau pengaturan."));
+  card.appendChild(el("div",{style:"color:var(--ink-dim);font-size:12.5px;margin-bottom:10px;"},"Wasit masuk lewat "+location.origin+"/#wasit dengan PIN-nya sendiri. Wasit lapangan hanya melihat dan mengisi skor lapangannya; cadangan bisa semua lapangan. Wasit tidak bisa membuka data pendaftar, keuangan, atau pengaturan. Untuk pelatihan tanpa PIN: "+location.origin+"/#latihan (data pura-pura, tidak tersimpan)."));
   if(REF_ACCOUNTS===null){ loadRefAccounts().then(()=>render()); card.appendChild(el("div",{class:"empty"},"Memuat\u2026")); return card; }
   if(refPinReveal){
     card.appendChild(el("div",{class:"flag", style:"background:rgba(212,175,55,0.14);border-color:var(--gold);color:var(--ink);"},[
@@ -4770,12 +4774,21 @@ function refSideName(m, key){
   return "Pemenang babak sebelumnya";
 }
 async function loadRefBoard(){
+  if(refDemo) return true; // latihan: data lokal, tidak ada permintaan ke server
   try{ REF_BOARD = await apiRead("ref_board"); return true; }
   catch(e){ console.error(e); if(e.status===401){ refereeScope=null; REF_BOARD=null; nav("admin-login"); } return false; }
 }
 async function refCall(action, extra, cat, id){
   if(refBusy) return null;
   refBusy = true;
+  if(refDemo){
+    try{
+      const m = REF_BOARD.matches.find(x=>x.category===cat && x.id===id);
+      demoApply(action, m, REF_BOARD.matches, extra||{}, REF_BOARD.target);
+      return m;
+    }catch(e){ showToast(REF_ERRORS[e.code] || "Tidak bisa diproses."); render(); return null; }
+    finally{ refBusy = false; }
+  }
   try{
     const r = await apiMutate(action, Object.assign({category:cat, matchId:id}, extra||{}));
     const nm = Object.assign({category:cat}, r.data);
@@ -4797,6 +4810,7 @@ function viewReferee(){
   const sec = el("div",{class:"section"});
   sec.appendChild(el("h2",{style:"font-size:20px;margin:0 0 4px;"}, refCourtTitle()));
   sec.appendChild(el("div",{style:"color:var(--ink-dim);font-size:13px;margin-bottom:12px;"},"Pilih pertandingan yang akan dipimpin. Daftar menyegarkan otomatis."));
+  if(refDemo) sec.appendChild(demoGuide());
   sec.appendChild(el("button",{class:"btn btn-outline btn-sm", style:"margin-bottom:12px;", onclick:async ()=>{ await loadRefBoard(); render(); }},"Segarkan"));
   if(!REF_BOARD){ sec.appendChild(el("div",{class:"empty"},"Memuat jadwal…")); wrap.appendChild(sec); return wrap; }
   const rows = REF_BOARD.entries.map(e=>({e, m: refFind(e.category, e.matchId)})).filter(x=>x.m && x.m.status!=="CANCELLED")
@@ -5058,6 +5072,91 @@ function viewTv(){
     tvRefresh().then(()=>render());
   }
   return wrap;
+}
+
+
+/* ============ MODE LATIHAN WASIT (/#latihan) — murni lokal, tanpa PIN, tidak menyentuh server ============ */
+let refDemo = false;
+function demoBoard(){
+  const names = { d1a:["Andi","Budi"], d1b:["Cecep","Dedi"], d2a:["Eka","Fajar"], d2b:["Gilang","Hendra"], d3a:["Indra","Joko"], d3b:["Kevin","Lutfi"] };
+  const P = id=>({type:"participant", participantId:id});
+  const live = (a,b,sa,sb,srv,seen,ack)=>({ sideAPlayers:names[a], sideBPlayers:names[b], scoreA:sa, scoreB:sb, servingSide:srv, serverToggleA:0, serverToggleB:0, kokCount:1, history:[], startedAt:new Date().toISOString(), switchSeen:seen, switchAck:ack });
+  const base = { category:"RISING", round:"SF" };
+  const matches = [
+    Object.assign({}, base, {id:"d1", matchNo:1, status:"SCHEDULED", sideA:P("d1a"), sideB:P("d1b")}),
+    Object.assign({}, base, {id:"d2", matchNo:2, status:"ON_COURT", sideA:P("d2a"), sideB:P("d2b"), liveScoring:live("d2a","d2b",19,15,"A",false,false)}),
+    Object.assign({}, base, {id:"d3", matchNo:3, status:"ON_COURT", sideA:P("d3a"), sideB:P("d3b"), liveScoring:live("d3a","d3b",38,36,"B",true,true)}),
+    { id:"d4", category:"RISING", round:"F", matchNo:1, status:"SCHEDULED", sideA:{type:"winnerOf",matchId:"d1"}, sideB:{type:"winnerOf",matchId:"d2"} }
+  ];
+  const entries = [["d1",0],["d2",0],["d3",2],["d4",6]].map(([id,t])=>({matchId:id, category:"RISING", day:1, timeIndex:t, court:"A"}));
+  return { court:"A", entries, matches, names, target:42 };
+}
+function demoFail(code){ return Object.assign(new Error(code), {code}); }
+// Aturan sama dengan api/_lib/refScoring.js (diuji paritasnya).
+function demoApply(action, m, list, p, target){
+  const closed = ["FINISHED","WO","CANCELLED"];
+  const finish = ()=>{
+    const ls = m.liveScoring; if(ls.scoreA===ls.scoreB) throw demoFail("score_tied");
+    const w = ls.scoreA>ls.scoreB ? m.sideA : m.sideB;
+    m.scoreA=ls.scoreA; m.scoreB=ls.scoreB; m.kokCount=ls.kokCount||1; m.winnerParticipantId=w.participantId; m.status="FINISHED"; m.actualFinishAt=nowIso();
+    const down = list.find(x=>(x.sideA.type==="winnerOf"&&x.sideA.matchId===m.id)||(x.sideB.type==="winnerOf"&&x.sideB.matchId===m.id));
+    if(down){ const k = down.sideA.matchId===m.id && down.sideA.type==="winnerOf" ? "sideA" : "sideB"; down[k] = {type:"participant", participantId:m.winnerParticipantId, resolvedFrom:m.id}; }
+  };
+  if(action==="REF_START"){
+    if(closed.includes(m.status)) throw demoFail("match_closed");
+    if(m.liveScoring && m.status==="ON_COURT") return m;
+    const a = m.sideA.type==="participant" && m.sideA.participantId, b = m.sideB.type==="participant" && m.sideB.participantId;
+    if(!a || !b) throw demoFail("sides_unknown");
+    const side = p.servingSide==="B" ? "B" : "A", idx = p.serverIdx===1 ? 1 : 0;
+    m.liveScoring = { sideAPlayers:REF_BOARD.names[a], sideBPlayers:REF_BOARD.names[b], scoreA:0, scoreB:0, servingSide:side, serverToggleA: side==="A"?idx:0, serverToggleB: side==="B"?idx:0, kokCount:1, history:[], startedAt:nowIso(), switchSeen:false, switchAck:false };
+    m.status = "ON_COURT"; return m;
+  }
+  if(!m.liveScoring) throw demoFail("not_started");
+  const ls = m.liveScoring; if(closed.includes(m.status)) throw demoFail("match_closed");
+  if(action==="REF_POINT"){
+    const side = p.side==="B" ? "B" : "A";
+    if(p.expect && (p.expect.a!==ls.scoreA || p.expect.b!==ls.scoreB)) throw demoFail("stale_score");
+    ls.history.push({scoreA:ls.scoreA, scoreB:ls.scoreB, servingSide:ls.servingSide, serverToggleA:ls.serverToggleA, serverToggleB:ls.serverToggleB, switchSeen:!!ls.switchSeen, switchAck:!!ls.switchAck});
+    const wasServing = ls.servingSide===side;
+    if(side==="A") ls.scoreA++; else ls.scoreB++;
+    if(!wasServing){ if(side==="A") ls.serverToggleA = 1-ls.serverToggleA; else ls.serverToggleB = 1-ls.serverToggleB; ls.servingSide = side; }
+    if(!ls.switchSeen && Math.max(ls.scoreA, ls.scoreB)>=21){ ls.switchSeen = true; ls.switchAck = false; }
+    if(ls.scoreA>=target || ls.scoreB>=target) finish();
+    return m;
+  }
+  if(action==="REF_UNDO"){ if(!ls.history.length) throw demoFail("nothing_to_undo"); Object.assign(ls, ls.history.pop()); return m; }
+  if(action==="REF_ACK_SWITCH"){ ls.switchAck = true; return m; }
+  if(action==="REF_KOK"){ ls.kokCount = (ls.kokCount||1)+1; return m; }
+  if(action==="REF_FINISH_NOW"){ finish(); return m; }
+  throw demoFail("unknown_action");
+}
+function startRefDemo(){
+  refDemo = true; refereeScope = "WASIT_A"; adminSession = false; adminCategoryScope = null;
+  REF_BOARD = demoBoard(); nav("wasit");
+}
+function exitRefDemo(){ refDemo = false; refereeScope = null; REF_BOARD = null; nav("home"); }
+function demoStrip(){
+  return el("div",{class:"demo-strip"},[
+    el("div",{},[el("b",{},"MODE LATIHAN"), " — data pura-pura, skor tidak tersimpan dan tidak mempengaruhi turnamen."]),
+    el("div",{style:"display:flex;gap:8px;"},[
+      el("button",{class:"btn btn-outline btn-xs", onclick:()=>{ REF_BOARD = demoBoard(); nav("wasit"); showToast("Latihan diulang dari awal."); }},"Ulang latihan"),
+      el("button",{class:"btn btn-outline btn-xs", onclick:exitRefDemo},"Keluar latihan")
+    ])
+  ]);
+}
+function demoGuide(){
+  const steps = [
+    "Latihan 1 (Mulai Pertandingan): mulai dari nol — pilih yang servis duluan, lalu tap kotak pasangan yang menang reli.",
+    "Latihan 2 (Lanjutkan Skor, 19–15): tap sampai salah satu pasangan mencapai 21, lalu tekan \"Sudah Tukar — Mulai Set 2\".",
+    "Latihan 3 (Lanjutkan Skor, 38–36): selesaikan sampai 42 — pertandingan otomatis selesai, tidak ada deuce.",
+    "Salah tap? Tekan Undo Poin Terakhir. Kok baru dipakai? Tekan +1 Kok Baru.",
+    "Setelah Latihan 1 dan 2 selesai, Final terbuka otomatis karena pemenangnya maju."
+  ];
+  const c = el("div",{class:"card", style:"margin-bottom:14px;"});
+  c.appendChild(el("div",{style:"font-weight:700;margin-bottom:6px;"},"Panduan singkat latihan wasit"));
+  const ul = el("ul",{style:"margin:0;padding-left:18px;color:var(--ink-dim);font-size:13px;line-height:1.5;"});
+  steps.forEach(t=>ul.appendChild(el("li",{},t)));
+  c.appendChild(ul); return c;
 }
 
 /* ============ DEMO MODE ============ */
@@ -5596,6 +5695,7 @@ function render(){
     case "wasit-score": view = refereeScope? viewRefereeScoring(route.params) : viewAdminLogin(); break;
     default: view = viewHome();
   }
+  if(refDemo && refereeScope) app.appendChild(demoStrip());
   app.appendChild(view);
   const modal = renderConfirmModal();
   if(modal) app.appendChild(modal);
@@ -5618,6 +5718,7 @@ function render(){
   if(regParam){ route = {name:"status", params:{regNo: regParam}}; }
   if(location.hash==="#tv"){ route = {name:"tv", params:{}}; }
   else if(location.hash==="#wasit"){ route = {name:"admin-login", params:{}}; }
+  else if(location.hash==="#latihan"){ startRefDemo(); return; }
   render();
 })();
 </script>
