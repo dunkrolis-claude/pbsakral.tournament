@@ -278,11 +278,11 @@
   .tv-courts{display:grid;grid-template-rows:repeat(5,1fr);gap:.8vh;padding:1vh 1vw 1vh 1.5vw;min-height:0;}
   .tv-court{display:flex;gap:1vw;align-items:center;background:#0d1220;border-left:.9vw solid #444;border-radius:1vh;padding:.5vh 1vw;min-height:0;overflow:hidden;}
   .tv-lap{font-family:'Anton';font-size:5.2vw;line-height:.9;text-align:center;color:#fff;min-width:6vw;} .tv-lap small{display:block;font-size:1.3vw;color:var(--ink-dim);letter-spacing:.2em;}
-  .tv-body{flex:1;min-width:0;} .tv-body.dim{opacity:.72;} .tv-meta{font-size:1.25vw;color:var(--ink-dim);margin-bottom:.3vh;}
+  .tv-body{flex:1;min-width:0;} .tv-body.dim{opacity:.72;} .tv-meta{font-size:1.2vw;color:var(--ink-dim);margin-bottom:.2vh;white-space:nowrap;}
   .tv-chip{display:inline-block;color:#000;font-weight:800;border-radius:.5vh;padding:0 .6vw;font-size:1.2vw;} .tv-chip.sm{font-size:1vw;}
-  .tv-team{display:flex;justify-content:space-between;align-items:center;gap:1vw;font-size:2.2vw;font-weight:700;line-height:1.15;} .tv-team.serve .tv-name::before{content:"\25cf ";color:var(--gold-bright);}
-  .tv-name{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;} .tv-score{font-family:'Anton';font-size:4.4vw;color:var(--gold-bright);min-width:6vw;text-align:right;}
-  .tv-switch{margin-top:.2vh;background:var(--gold);color:#000;font-family:'Anton';font-size:1.8vw;text-align:center;border-radius:.6vh;animation:swpulse 1.2s infinite;}
+  .tv-team{display:flex;justify-content:space-between;align-items:center;gap:1vw;font-size:1.9vw;font-weight:700;line-height:1.05;} .tv-team.serve .tv-name::before{content:"\25cf ";color:var(--gold-bright);}
+  .tv-name{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;} .tv-score{font-family:'Anton';font-size:3.4vw;line-height:1;color:var(--gold-bright);min-width:6vw;text-align:right;}
+  .tv-swb{margin-left:1vw;background:var(--gold);color:#000;font-family:'Anton';font-size:1.3vw;letter-spacing:.06em;padding:0 .8vw;border-radius:.5vh;animation:swpulse 1.2s infinite;}
   .tv-tag{font-size:1.2vw;color:var(--gold-bright);font-weight:800;letter-spacing:.1em;margin-top:.2vh;} .tv-idle{color:#556;font-size:1.8vw;}
   .tv-side{padding:1vh 1.5vw 1vh .5vw;overflow:hidden;} .tv-h{font-family:'Anton';font-size:2.6vw;letter-spacing:.05em;color:var(--gold-bright);margin-bottom:1.5vh;}
   .tv-line{font-size:1.5vw;margin-bottom:1.4vh;line-height:1.25;} .tv-sub{font-size:1.25vw;color:#cfd6e6;} .tv .dim{color:#7d8699;}
@@ -4933,13 +4933,13 @@ function tvCourtRow(court){
   if(live && m.liveScoring){
     const ls = m.liveScoring;
     const sw = ls.switchSeen && !ls.switchAck;
+    if(sw) meta.appendChild(el("span",{class:"tv-swb"},"TUKAR LAPANGAN"));
     row.appendChild(el("div",{class:"tv-body"},[
       meta,
       el("div",{class:"tv-teams"},[
         el("div",{class:"tv-team"+(ls.servingSide==="A"?" serve":"")},[el("span",{class:"tv-name"}, ls.sideAPlayers.join(" / ")), el("span",{class:"tv-score"}, String(ls.scoreA))]),
         el("div",{class:"tv-team"+(ls.servingSide==="B"?" serve":"")},[el("span",{class:"tv-name"}, ls.sideBPlayers.join(" / ")), el("span",{class:"tv-score"}, String(ls.scoreB))]),
       ]),
-      sw ? el("div",{class:"tv-switch"},"TUKAR LAPANGAN") : null
     ]));
   } else {
     row.appendChild(el("div",{class:"tv-body dim"},[
