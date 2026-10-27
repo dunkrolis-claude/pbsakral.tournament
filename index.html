@@ -266,6 +266,27 @@
   .sched-cell.empty{color:var(--ink-faint);}
   .sched-cell.filled{background:rgba(212,175,55,0.10);color:var(--gold-bright);}
   .sched-cell.draft{background:transparent;color:var(--ink-dim);border:1px dashed var(--line);cursor:default;}
+  .switch-banner{background:rgba(212,175,55,0.16);border:2px solid var(--gold);border-radius:14px;padding:12px;margin-bottom:12px;text-align:center;animation:swpulse 1.2s ease-in-out infinite;}
+  .switch-banner .sb-title{font-family:'Anton';font-size:26px;letter-spacing:.06em;color:var(--gold-bright);}
+  .switch-banner .sb-sub{font-size:12.5px;color:var(--ink-dim);}
+  @keyframes swpulse{0%,100%{box-shadow:0 0 0 0 rgba(212,175,55,.45);}50%{box-shadow:0 0 0 8px rgba(212,175,55,0);}}
+  .tv{position:fixed;inset:0;background:#05070d;color:#fff;display:grid;grid-template-rows:9vh 1fr 4.5vh;cursor:none;overflow:hidden;font-size:1.6vw;}
+  .tv-head{display:flex;align-items:center;gap:1.5vw;padding:0 2vw;border-bottom:.25vh solid #222;}
+  .tv-head img{height:7vh;} .tv-title{font-family:'Anton';font-size:3.2vw;letter-spacing:.04em;flex:1;line-height:1;} .tv-title small{display:block;font-family:inherit;font-size:1.4vw;color:var(--gold-bright);letter-spacing:.2em;}
+  .tv-clock{font-family:'Anton';font-size:4vw;color:var(--gold-bright);}
+  .tv-main{display:grid;grid-template-columns:62% 38%;min-height:0;}
+  .tv-courts{display:grid;grid-template-rows:repeat(5,1fr);gap:.8vh;padding:1vh 1vw 1vh 1.5vw;min-height:0;}
+  .tv-court{display:flex;gap:1vw;align-items:center;background:#0d1220;border-left:.9vw solid #444;border-radius:1vh;padding:.5vh 1vw;min-height:0;overflow:hidden;}
+  .tv-lap{font-family:'Anton';font-size:5.2vw;line-height:.9;text-align:center;color:#fff;min-width:6vw;} .tv-lap small{display:block;font-size:1.3vw;color:var(--ink-dim);letter-spacing:.2em;}
+  .tv-body{flex:1;min-width:0;} .tv-body.dim{opacity:.72;} .tv-meta{font-size:1.25vw;color:var(--ink-dim);margin-bottom:.3vh;}
+  .tv-chip{display:inline-block;color:#000;font-weight:800;border-radius:.5vh;padding:0 .6vw;font-size:1.2vw;} .tv-chip.sm{font-size:1vw;}
+  .tv-team{display:flex;justify-content:space-between;align-items:center;gap:1vw;font-size:2.2vw;font-weight:700;line-height:1.15;} .tv-team.serve .tv-name::before{content:"\25cf ";color:var(--gold-bright);}
+  .tv-name{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;} .tv-score{font-family:'Anton';font-size:4.4vw;color:var(--gold-bright);min-width:6vw;text-align:right;}
+  .tv-switch{margin-top:.2vh;background:var(--gold);color:#000;font-family:'Anton';font-size:1.8vw;text-align:center;border-radius:.6vh;animation:swpulse 1.2s infinite;}
+  .tv-tag{font-size:1.2vw;color:var(--gold-bright);font-weight:800;letter-spacing:.1em;margin-top:.2vh;} .tv-idle{color:#556;font-size:1.8vw;}
+  .tv-side{padding:1vh 1.5vw 1vh .5vw;overflow:hidden;} .tv-h{font-family:'Anton';font-size:2.6vw;letter-spacing:.05em;color:var(--gold-bright);margin-bottom:1.5vh;}
+  .tv-line{font-size:1.5vw;margin-bottom:1.4vh;line-height:1.25;} .tv-sub{font-size:1.25vw;color:#cfd6e6;} .tv .dim{color:#7d8699;}
+  .tv-foot{display:flex;gap:2vw;align-items:center;justify-content:center;font-size:1.2vw;color:#8b94a8;border-top:.25vh solid #222;} .tv-foot i{display:inline-block;width:1.1vw;height:1.1vw;border-radius:.2vw;margin-right:.5vw;vertical-align:-.1vw;}
   .sched-legend{display:flex;flex-wrap:wrap;gap:8px 14px;margin:0 0 10px;font-size:11.5px;color:var(--ink-dim);}
   .sched-legend i{display:inline-block;width:11px;height:11px;border-radius:3px;margin-right:5px;vertical-align:-1px;}
   .sched-cell .sc-sub{font-weight:600;font-size:9px;color:var(--ink-faint);margin-top:1px;white-space:normal;}
@@ -1243,7 +1264,7 @@ function statusBadge(status){
 
 function topbar(activeTab){
   const bar = el("div",{class:"topbar"});
-  const brand = el("div",{class:"brand", onclick:()=>nav(adminSession?"admin-dashboard":"home")},[
+  const brand = el("div",{class:"brand", onclick:()=>nav(refereeScope?"wasit":adminSession?"admin-dashboard":"home")},[
     el("img",{src:LOGO_EVENT, alt:"1 Dekade PB Sakral"}),
     el("div",{class:"brand-text"},["PB SAKRAL", el("small",{},"1 DEKADE 2026")]),
     el("div",{class:"header-logos"},[
@@ -1253,10 +1274,10 @@ function topbar(activeTab){
   ]);
   bar.appendChild(brand);
   const navWrap = el("div",{class:"topnav"});
-  if(adminSession){
+  if(adminSession || refereeScope){
     navWrap.appendChild(el("button",{onclick:async ()=>{
       try{ await fetch("/api/admin-logout", {method:"POST", credentials:"include"}); }catch(e){ console.error(e); }
-      adminSession=false; adminCategoryScope=null; listFilterCategory="ALL";
+      adminSession=false; adminCategoryScope=null; listFilterCategory="ALL"; refereeScope=null; REF_BOARD=null; clearInterval(refBoardTimer);
       await loadIndex(); await loadPhase2(); // refresh to public-safe views now that session is gone
       nav("home");
     }},"Keluar"));
@@ -2222,6 +2243,14 @@ async function loginViaApi(pin){
 async function tryLogin(val){
   const scope = await loginViaApi(val);
   if(!scope){ showToast("Kode akses salah."); return; }
+  if(/^WASIT_[A-ER]$/.test(scope)){
+    refereeScope = scope; adminSession = false; adminCategoryScope = null;
+    await loadRefBoard();
+    nav("wasit");
+    clearInterval(refBoardTimer);
+    refBoardTimer = setInterval(async ()=>{ if(refereeScope && route.name==="wasit" && !refBusy){ await loadRefBoard(); if(route.name==="wasit") render(); } }, 15000);
+    return;
+  }
   adminSession = true;
   adminCategoryScope = (scope==="SUPER") ? null : scope;
   await Promise.all([loadIndex(), loadPhase2(), adminCategoryScope? null : loadExpenses(), loadFinanceExtra()]); // admin can now load registrations + phase2 + keuangan
@@ -3738,7 +3767,7 @@ function viewAdminMatchControl(){
   const entries = SCHEDULE.filter(s=>s.day===mcActiveDay)
     .map(s=>({sched:s, match: matchById(s.category, s.matchId)}))
     .filter(e=>e.match)
-    .sort((a,b)=> (a.sched.timeIndex-b.sched.timeIndex) || (a.sched.court-b.sched.court));
+    .sort((a,b)=> (a.sched.timeIndex-b.sched.timeIndex) || String(a.sched.court).localeCompare(String(b.sched.court)));
 
   if(entries.length===0){
     sec.appendChild(el("div",{class:"empty"},"Belum ada match terjadwal di hari ini."));
@@ -4391,6 +4420,53 @@ function viewAdminFinance(){
 let refActiveDay = 1;
 let refTarget = null; // {category, matchId}
 
+/* --- Super Admin: akun wasit + kok yang belum dibebankan --- */
+let REF_ACCOUNTS = null;     // [{scope, updated_at}]
+let refPinReveal = null;     // {court, pin} — tampil sekali
+async function loadRefAccounts(){ try{ REF_ACCOUNTS = await apiRead("referee_accounts"); }catch(e){ console.error(e); REF_ACCOUNTS = []; } }
+function renderRefAccountsCard(){
+  const card = el("div",{class:"card", style:"margin-bottom:14px;"});
+  card.appendChild(el("div",{style:"font-weight:700;margin-bottom:4px;"},"Akun Wasit (login terpisah dari admin)"));
+  card.appendChild(el("div",{style:"color:var(--ink-dim);font-size:12.5px;margin-bottom:10px;"},"Wasit masuk lewat "+location.origin+"/#wasit dengan PIN-nya sendiri. Wasit lapangan hanya melihat dan mengisi skor lapangannya; cadangan bisa semua lapangan. Wasit tidak bisa membuka data pendaftar, keuangan, atau pengaturan."));
+  if(REF_ACCOUNTS===null){ loadRefAccounts().then(()=>render()); card.appendChild(el("div",{class:"empty"},"Memuat\u2026")); return card; }
+  if(refPinReveal){
+    card.appendChild(el("div",{class:"flag", style:"background:rgba(212,175,55,0.14);border-color:var(--gold);color:var(--ink);"},[
+      el("div",{style:"font-size:12px;"},"PIN baru "+(refPinReveal.court==="R"?"Wasit Cadangan":"Wasit Lapangan "+refPinReveal.court)+" \u2014 catat sekarang, tidak bisa dilihat lagi:"),
+      el("div",{style:"font-family:'Anton';font-size:34px;letter-spacing:.2em;color:var(--gold-bright);margin:6px 0;"}, refPinReveal.pin),
+      el("button",{class:"btn btn-outline btn-sm", onclick:()=>{ refPinReveal=null; render(); }},"Sudah dicatat, tutup")
+    ]));
+  }
+  [["A","Lapangan A"],["B","Lapangan B"],["C","Lapangan C"],["D","Lapangan D"],["E","Lapangan E"],["R","Cadangan"]].forEach(([code,label])=>{
+    const acc = (REF_ACCOUNTS||[]).find(a=>a.scope==="WASIT_"+code);
+    const nm = REF_DEFAULTS[code==="R"?"RESERVE":code] || "";
+    const row = el("div",{style:"display:flex;align-items:center;gap:10px;padding:8px 0;border-top:1px solid var(--line);"});
+    row.appendChild(el("div",{style:"flex:1;min-width:0;"},[el("div",{style:"font-weight:600;font-size:13.5px;"}, label+(nm?" \u00b7 "+nm:"")), el("div",{style:"font-size:11.5px;color:var(--ink-faint);"}, acc ? "PIN aktif" : "Belum ada PIN")]));
+    row.appendChild(el("button",{class:"btn btn-sm "+(acc?"btn-outline":"btn-gold"), onclick:()=>{
+      const run = async ()=>{ try{ const r = await apiMutate("SET_REFEREE_PIN",{court:code}); refPinReveal = {court:code, pin:r.pin}; await loadRefAccounts(); render(); }catch(e){ console.error(e); showToast("Gagal membuat PIN."); } };
+      if(acc) openConfirm({title:"Reset PIN?", body:"PIN lama "+label+" langsung tidak berlaku dan diganti PIN acak baru.", confirmLabel:"Reset PIN", onConfirm:run}); else run();
+    }}, acc ? "Reset PIN" : "Buat PIN"));
+    card.appendChild(row);
+  });
+  return card;
+}
+function renderKokPendingCard(){
+  const pending = [];
+  META.categories.forEach(c=> (MATCHES[c.code]||[]).forEach(m=>{ if(m.status==="FINISHED" && !m.depositCharged) pending.push(m); }));
+  if(!pending.length) return null;
+  const card = el("div",{class:"card", style:"margin-bottom:14px;border-color:var(--gold);"});
+  card.appendChild(el("div",{style:"font-weight:700;margin-bottom:4px;"},pending.length+" pertandingan selesai, kok belum dibebankan"));
+  card.appendChild(el("div",{style:"color:var(--ink-dim);font-size:12.5px;margin-bottom:10px;"},"Hasil yang diinput wasit tidak otomatis memotong deposit kok. Periksa jumlah kok, lalu bebankan (Rp10.000 per kok per pasangan)."));
+  card.appendChild(el("button",{class:"btn btn-gold btn-sm", onclick:()=>openConfirm({
+    title:"Bebankan kok?", body:pending.length+" pertandingan akan dibebankan ke deposit masing-masing pasangan. Tindakan ini mengubah saldo deposit.", confirmLabel:"Bebankan",
+    onConfirm: async ()=>{
+      await loadPhase2();
+      let n = 0;
+      for(const c of META.categories){ for(const m of (MATCHES[c.code]||[])){ if(m.status==="FINISHED" && !m.depositCharged){ m.depositCharged = true; if(await saveMatches()){ await chargeDepositForMatch(m); n++; } } } }
+      showToast(n+" pertandingan dibebankan."); render();
+    }
+  })},"Bebankan Sekarang"));
+  return card;
+}
 function viewAdminReferee(){
   const wrap = el("div",{});
   wrap.appendChild(topbar("admin"));
@@ -4398,6 +4474,7 @@ function viewAdminReferee(){
   sec.appendChild(adminTabs("admin-referee"));
   sec.appendChild(el("h2",{style:"font-size:20px;margin:0 0 4px;"},"Pilih Match untuk Wasit"));
   sec.appendChild(el("div",{style:"color:var(--ink-dim);font-size:13px;margin-bottom:14px;"},"Serahkan HP/tablet ini ke wasit yang bertugas setelah memilih match."));
+  if(!adminCategoryScope){ const kp = renderKokPendingCard(); if(kp) sec.appendChild(kp); sec.appendChild(renderRefAccountsCard()); }
 
   const dayTabs = el("div",{class:"tabs"});
   TOURNAMENT_DAYS.forEach(d=>{
@@ -4408,7 +4485,7 @@ function viewAdminReferee(){
   const entries = SCHEDULE.filter(s=>s.day===refActiveDay)
     .map(s=>({sched:s, match: matchById(s.category, s.matchId)}))
     .filter(e=>e.match && e.match.status!=="CANCELLED")
-    .sort((a,b)=> (a.sched.timeIndex-b.sched.timeIndex) || (a.sched.court-b.sched.court));
+    .sort((a,b)=> (a.sched.timeIndex-b.sched.timeIndex) || String(a.sched.court).localeCompare(String(b.sched.court)));
 
   if(entries.length===0){
     sec.appendChild(el("div",{class:"empty"},"Belum ada match terjadwal di hari ini."));
@@ -4523,7 +4600,7 @@ function viewAdminRefereeSetup(params){
 }
 
 function refSnapshot(ls){
-  return { scoreA: ls.scoreA, scoreB: ls.scoreB, servingSide: ls.servingSide, serverToggleA: ls.serverToggleA, serverToggleB: ls.serverToggleB };
+  return { scoreA: ls.scoreA, scoreB: ls.scoreB, servingSide: ls.servingSide, serverToggleA: ls.serverToggleA, serverToggleB: ls.serverToggleB, switchSeen: !!ls.switchSeen, switchAck: !!ls.switchAck };
 }
 let refPendingFinish = null; // {category, matchId, scoreA, scoreB}
 async function refPoint(category, matchId, winSide){
@@ -4537,6 +4614,7 @@ async function refPoint(category, matchId, winSide){
     ls.servingSide = winSide;
   }
   const target = META.settings.scoringTarget || 42;
+  if(!ls.switchSeen && Math.max(ls.scoreA, ls.scoreB) >= 21){ ls.switchSeen = true; ls.switchAck = false; }
   if(ls.scoreA>=target || ls.scoreB>=target){
     await saveMatches();
     await mcFinish(category, m, ls.scoreA, ls.scoreB, ls.kokCount);
@@ -4603,6 +4681,13 @@ function viewAdminRefereeScoring(params){
   sec.appendChild(el("div",{style:"text-align:center;color:var(--ink-faint);font-size:11.5px;margin-bottom:2px;"}, cat.name+" \u00b7 "+ROUND_LABELS[m.round]+" #"+m.matchNo));
   if(effectiveReferee(m)) sec.appendChild(el("div",{style:"text-align:center;color:var(--gold-bright);font-size:11.5px;font-weight:700;margin-bottom:10px;"},"\ud83d\udc64 Wasit: "+effectiveReferee(m)));
 
+  if(ls.switchSeen && !ls.switchAck){
+    sec.appendChild(el("div",{class:"switch-banner"},[
+      el("div",{class:"sb-title"},"TUKAR LAPANGAN"),
+      el("div",{class:"sb-sub"},"Poin pertama sudah mencapai 21. Pemain pindah sisi, skor tetap berlanjut."),
+      el("button",{class:"btn btn-gold btn-block", style:"margin-top:8px;", onclick: async ()=>{ ls.switchAck = true; await saveMatches(); render(); }},"Sudah Tukar Lapangan")
+    ]));
+  }
   const court = ls.servingSide==="A" ? (ls.scoreA%2===0?"Kanan":"Kiri") : (ls.scoreB%2===0?"Kanan":"Kiri");
   const serverName = ls.servingSide==="A" ? ls.sideAPlayers[ls.serverToggleA] : ls.sideBPlayers[ls.serverToggleB];
   sec.appendChild(el("div",{class:"ref-court"},"Service: "+serverName+" \u2014 dari "+court));
@@ -4644,6 +4729,315 @@ function viewAdminRefereeScoring(params){
   sec.appendChild(el("button",{class:"btn btn-outline btn-block", style:"margin-top:10px;", onclick:()=>nav("admin-referee")},"Kembali ke Daftar Match"));
 
   wrap.appendChild(sec);
+  return wrap;
+}
+
+
+/* ============ WASIT: akun terbatas (papan skor per lapangan) ============ */
+let refereeScope = null;   // "WASIT_A".."WASIT_E" / "WASIT_R" setelah login wasit
+let REF_BOARD = null;      // { court, entries, matches, names, target }
+let refBusy = false;
+let refBoardTimer = null;
+const REF_ERRORS = {
+  stale_score:"Skor di server sudah berbeda — layar disegarkan.", match_closed:"Pertandingan ini sudah selesai.",
+  forbidden_court:"Match ini bukan di lapangan Anda.", sides_unknown:"Kedua pasangan belum diketahui.",
+  busy_try_again:"Server sibuk, coba tap lagi.", not_started:"Pertandingan belum dimulai.", score_tied:"Skor sama, tidak bisa diselesaikan.",
+  nothing_to_undo:"Tidak ada poin untuk dibatalkan.", unauthorized:"Sesi habis, silakan masuk lagi."
+};
+function refCourtTitle(){ const c = refereeScope ? refereeScope.slice(6) : ""; return c==="R" ? "Wasit Cadangan · semua lapangan" : "Wasit Lapangan "+c; }
+function refFind(cat, id){ return REF_BOARD ? REF_BOARD.matches.find(m=>m.category===cat && m.id===id) : null; }
+function refSideName(m, key){
+  const s = m[key];
+  if(s && s.type==="participant" && s.participantId){ const n = REF_BOARD.names[s.participantId]; return n ? n.join(" / ") : "—"; }
+  return "Pemenang babak sebelumnya";
+}
+async function loadRefBoard(){
+  try{ REF_BOARD = await apiRead("ref_board"); return true; }
+  catch(e){ console.error(e); if(e.status===401){ refereeScope=null; REF_BOARD=null; nav("admin-login"); } return false; }
+}
+async function refCall(action, extra, cat, id){
+  if(refBusy) return null;
+  refBusy = true;
+  try{
+    const r = await apiMutate(action, Object.assign({category:cat, matchId:id}, extra||{}));
+    const nm = Object.assign({category:cat}, r.data);
+    const i = REF_BOARD.matches.findIndex(x=>x.category===cat && x.id===id);
+    if(i>=0) REF_BOARD.matches[i] = nm; else REF_BOARD.matches.push(nm);
+    return nm;
+  }catch(e){
+    const code = e.body && e.body.error;
+    showToast(REF_ERRORS[code] || "Gagal menyimpan. Periksa sinyal lalu coba lagi.");
+    if(code==="stale_score" || code==="match_closed") await loadRefBoard();
+    if(code==="unauthorized"){ refereeScope=null; nav("admin-login"); return null; }
+    render();
+    return null;
+  }finally{ refBusy = false; }
+}
+function viewReferee(){
+  const wrap = el("div",{});
+  wrap.appendChild(topbar("wasit"));
+  const sec = el("div",{class:"section"});
+  sec.appendChild(el("h2",{style:"font-size:20px;margin:0 0 4px;"}, refCourtTitle()));
+  sec.appendChild(el("div",{style:"color:var(--ink-dim);font-size:13px;margin-bottom:12px;"},"Pilih pertandingan yang akan dipimpin. Daftar menyegarkan otomatis."));
+  sec.appendChild(el("button",{class:"btn btn-outline btn-sm", style:"margin-bottom:12px;", onclick:async ()=>{ await loadRefBoard(); render(); }},"Segarkan"));
+  if(!REF_BOARD){ sec.appendChild(el("div",{class:"empty"},"Memuat jadwal…")); wrap.appendChild(sec); return wrap; }
+  const rows = REF_BOARD.entries.map(e=>({e, m: refFind(e.category, e.matchId)})).filter(x=>x.m && x.m.status!=="CANCELLED")
+    .sort((a,b)=> (a.e.day-b.e.day) || (a.e.timeIndex-b.e.timeIndex) || String(a.e.court).localeCompare(String(b.e.court)));
+  if(rows.length===0) sec.appendChild(el("div",{class:"empty"},"Belum ada match terjadwal untuk lapangan ini."));
+  let lastDay = null;
+  rows.forEach(({e,m})=>{
+    if(e.day!==lastDay){ lastDay = e.day; sec.appendChild(el("div",{class:"section-title", style:"margin-top:14px;"}, (TOURNAMENT_DAYS.find(d=>d.day===e.day)||{}).label || "Hari "+e.day)); }
+    const color = SCHEDULE_CAT_COLORS[e.category] || "#888";
+    const card = el("div",{class:"card", style:"border-left:4px solid "+color+";margin-bottom:10px;"});
+    card.appendChild(el("div",{style:"font-size:12px;color:var(--ink-dim);margin-bottom:4px;"}, timeLabel(e.timeIndex)+" · Lap "+e.court+" · "+catByCode(e.category).name+" · "+(ROUND_LABELS[m.round]||m.round)+" #"+m.matchNo));
+    const finished = m.status==="FINISHED" || m.status==="WO";
+    card.appendChild(el("div",{style:"font-weight:700;font-size:14px;line-height:1.4;"}, [refSideName(m,"sideA"), el("span",{style:"color:var(--ink-faint);font-weight:400;"}," vs "), refSideName(m,"sideB")]));
+    if(finished) card.appendChild(el("div",{style:"margin-top:6px;color:var(--gold-bright);font-weight:700;"}, m.status==="WO" ? "WO" : "Selesai "+m.scoreA+" – "+m.scoreB));
+    else {
+      const ready = m.sideA.type==="participant" && m.sideB.type==="participant";
+      const ongoing = m.status==="ON_COURT" && m.liveScoring;
+      if(!ready) card.appendChild(el("div",{class:"flag", style:"margin:8px 0 0;"},"Menunggu hasil babak sebelumnya."));
+      else card.appendChild(el("button",{class:"btn btn-gold btn-block", style:"margin-top:10px;", onclick:()=> nav(ongoing?"wasit-score":"wasit-start", {category:e.category, matchId:m.id})}, ongoing ? "Lanjutkan Skor ("+m.liveScoring.scoreA+"–"+m.liveScoring.scoreB+")" : "Mulai Pertandingan"));
+    }
+    sec.appendChild(card);
+  });
+  wrap.appendChild(sec);
+  return wrap;
+}
+function viewRefereeStart(params){
+  const wrap = el("div",{});
+  wrap.appendChild(topbar("wasit"));
+  wrap.appendChild(backRow(()=>nav("wasit")));
+  const {category, matchId} = params;
+  const m = refFind(category, matchId);
+  const sec = el("div",{class:"section"});
+  if(!m){ sec.appendChild(el("div",{class:"empty"},"Match tidak ditemukan.")); wrap.appendChild(sec); return wrap; }
+  sec.appendChild(el("h2",{style:"font-size:19px;margin:0 0 4px;"},"Mulai Pertandingan"));
+  sec.appendChild(el("div",{style:"color:var(--ink-dim);font-size:13px;margin-bottom:14px;"}, catByCode(category).name+" · "+(ROUND_LABELS[m.round]||m.round)+" #"+m.matchNo));
+  const nA = REF_BOARD.names[m.sideA.participantId], nB = REF_BOARD.names[m.sideB.participantId];
+  if(!nA || !nB){ sec.appendChild(el("div",{class:"flag"},"Kedua pasangan belum diketahui.")); wrap.appendChild(sec); return wrap; }
+  let side = "A", idx = 0;
+  const segSide = el("div",{class:"seg"});
+  const bA = el("button",{class:"active", type:"button"}, nA.join("/")), bB = el("button",{type:"button"}, nB.join("/"));
+  segSide.appendChild(bA); segSide.appendChild(bB);
+  const f1 = el("div",{class:"field"}); f1.appendChild(el("label",{},"Siapa yang service duluan?")); f1.appendChild(segSide); sec.appendChild(f1);
+  const pw = el("div",{class:"radio-cats", style:"grid-template-columns:1fr 1fr;"});
+  function drawPlayers(){
+    pw.innerHTML = "";
+    (side==="A"?nA:nB).forEach((name,i)=> pw.appendChild(el("div",{class:"radio-cat"+(idx===i?" selected":""), style:"--accent2:var(--gold);", onclick:()=>{ idx=i; drawPlayers(); }},[el("div",{class:"rc-name", style:"font-size:13px;"}, name)])));
+  }
+  drawPlayers();
+  const f2 = el("div",{class:"field"}); f2.appendChild(el("label",{},"Pemain yang service")); f2.appendChild(pw); sec.appendChild(f2);
+  bA.addEventListener("click",()=>{ side="A"; idx=0; bA.className="active"; bB.className=""; drawPlayers(); });
+  bB.addEventListener("click",()=>{ side="B"; idx=0; bB.className="active"; bA.className=""; drawPlayers(); });
+  sec.appendChild(el("button",{class:"btn btn-gold btn-block", style:"margin-top:8px;", onclick: async ()=>{
+    const r = await refCall("REF_START", {servingSide:side, serverIdx:idx}, category, matchId);
+    if(r) nav("wasit-score", {category, matchId});
+  }},"Mulai Pertandingan"));
+  wrap.appendChild(sec);
+  return wrap;
+}
+async function refTap(category, matchId, side){
+  const m = refFind(category, matchId); if(!m || !m.liveScoring) return;
+  const ls = m.liveScoring;
+  const r = await refCall("REF_POINT", {side, expect:{a:ls.scoreA, b:ls.scoreB}}, category, matchId);
+  if(!r) return;
+  if(r.status==="FINISHED"){
+    showToast("Selesai "+r.scoreA+"–"+r.scoreB+". Pemenang maju ke babak berikutnya.");
+    await loadRefBoard(); nav("wasit"); return;
+  }
+  render();
+}
+function viewRefereeScoring(params){
+  const wrap = el("div",{});
+  wrap.appendChild(topbar("wasit"));
+  const {category, matchId} = params;
+  const m = refFind(category, matchId);
+  if(!m || !m.liveScoring){ wrap.appendChild(el("div",{class:"section"},[el("div",{class:"empty"},"Match belum dimulai."), el("button",{class:"btn btn-outline btn-block", onclick:()=>nav("wasit")},"Kembali")])); return wrap; }
+  const ls = m.liveScoring, target = REF_BOARD.target || 42;
+  const sec = el("div",{class:"section"});
+  sec.appendChild(el("div",{style:"text-align:center;color:var(--ink-faint);font-size:11.5px;margin-bottom:6px;"}, catByCode(category).name+" · "+(ROUND_LABELS[m.round]||m.round)+" #"+m.matchNo));
+  if(ls.switchSeen && !ls.switchAck){
+    sec.appendChild(el("div",{class:"switch-banner"},[
+      el("div",{class:"sb-title"},"TUKAR LAPANGAN"),
+      el("div",{class:"sb-sub"},"Poin pertama sudah mencapai 21. Pemain pindah sisi, skor tetap berlanjut."),
+      el("button",{class:"btn btn-gold btn-block", style:"margin-top:8px;", onclick:()=>refCall("REF_ACK_SWITCH",{},category,matchId).then(()=>render())},"Sudah Tukar Lapangan")
+    ]));
+  }
+  const court = ls.servingSide==="A" ? (ls.scoreA%2===0?"Kanan":"Kiri") : (ls.scoreB%2===0?"Kanan":"Kiri");
+  const serverName = ls.servingSide==="A" ? ls.sideAPlayers[ls.serverToggleA] : ls.sideBPlayers[ls.serverToggleB];
+  sec.appendChild(el("div",{class:"ref-court"},"Service: "+serverName+" — dari "+court));
+  const board = el("div",{class:"ref-scoreboard"});
+  [["A",ls.sideAPlayers,ls.scoreA],["B",ls.sideBPlayers,ls.scoreB]].forEach(([k,pl,sc])=>{
+    board.appendChild(el("div",{class:"ref-side"+(ls.servingSide===k?" serving":""), onclick:()=>refTap(category, matchId, k)},[
+      el("div",{class:"rs-name"}, pl.join(" / ")), el("div",{class:"rs-score"}, String(sc)), el("div",{class:"rs-serve"}, ls.servingSide===k ? "● SERVICE" : "")
+    ]));
+  });
+  sec.appendChild(board);
+  sec.appendChild(el("div",{style:"text-align:center;color:var(--ink-faint);font-size:11px;margin-bottom:10px;"},"Target: "+target+" poin · Tukar lapangan di 21 · Tap kotak pasangan yang memenangkan reli"));
+  const kokRow = el("div",{style:"display:flex;align-items:center;justify-content:center;gap:12px;margin-bottom:16px;"});
+  kokRow.appendChild(el("div",{style:"font-size:13px;color:var(--ink-dim);"},["🏸 Kok terpakai: ", el("b",{style:"color:var(--gold-bright);font-size:16px;"}, String(ls.kokCount||1))]));
+  kokRow.appendChild(el("button",{class:"btn btn-outline btn-sm", onclick:()=>refCall("REF_KOK",{},category,matchId).then(()=>render())},"+1 Kok Baru"));
+  sec.appendChild(kokRow);
+  const row = el("div",{style:"display:flex;gap:10px;"});
+  row.appendChild(el("button",{class:"btn btn-outline", style:"flex:1;", onclick:()=>refCall("REF_UNDO",{},category,matchId).then(()=>render())},"Undo Poin Terakhir"));
+  row.appendChild(el("button",{class:"btn btn-danger", style:"flex:1;", onclick:()=>openConfirm({
+    title:"Selesaikan Sekarang?", body:"Skor saat ini ("+ls.scoreA+"-"+ls.scoreB+") disimpan sebagai hasil akhir walau belum mencapai target.", confirmLabel:"Selesaikan",
+    onConfirm: async ()=>{ if(ls.scoreA===ls.scoreB){ showToast("Skor tidak boleh sama."); return; } const r = await refCall("REF_FINISH_NOW",{},category,matchId); if(r){ await loadRefBoard(); nav("wasit"); } }
+  })},"Selesaikan Sekarang"));
+  sec.appendChild(row);
+  sec.appendChild(el("button",{class:"btn btn-outline btn-block", style:"margin-top:10px;", onclick:()=>nav("wasit")},"Kembali ke Daftar Match"));
+  wrap.appendChild(sec);
+  return wrap;
+}
+
+/* ============ TAMPILAN LED (/#tv) — publik, 16:9, tanpa menu ============ */
+let tvTick = 0, tvTimer = null, tvLastIndex = 0;
+const TV_SLIDE_SECONDS = 10;
+const TV_ROUND_SHORT = {R64:"R64", R32:"R32", R16:"16 Besar", QF:"Perempat Final", SF:"Semifinal", F:"FINAL"};
+function tvPairName(m, key){
+  const s = m[key];
+  if(s && s.type==="participant" && s.participantId){ const r = regSummary(s.participantId); return r ? r.player1+" / "+r.player2 : "—"; }
+  return "Menunggu pemenang";
+}
+function tvDone(m){ return m.status==="FINISHED" || m.status==="WO" || m.status==="CANCELLED"; }
+function tvCourtQueue(court){
+  return SCHEDULE.filter(s=>s.court===court).map(s=>({s, m: matchById(s.category, s.matchId)})).filter(x=>x.m && !tvDone(x.m))
+    .sort((a,b)=> (a.s.day-b.s.day) || (a.s.timeIndex-b.s.timeIndex));
+}
+async function tvRefresh(){
+  try{
+    const [mr, sr] = await Promise.all([ sb.from("matches").select("*"), sb.from("schedule").select("*").eq("id",1).maybeSingle() ]);
+    if(mr.error) throw mr.error;
+    META.categories.forEach(cat=>{ const row = (mr.data||[]).find(r=>r.category_code===cat.code); MATCHES[cat.code] = row ? (row.data.list||[]) : []; });
+    SCHEDULE = (sr.data && sr.data.data && sr.data.data.list) || [];
+    if(Date.now()-tvLastIndex > 60000){ tvLastIndex = Date.now(); await loadIndex(); }
+  }catch(e){ console.error(e); /* tampilkan data terakhir; jangan kosongkan layar */ }
+}
+function tvCourtRow(court){
+  const q = tvCourtQueue(court);
+  const live = q.find(x=>x.m.status==="ON_COURT" && x.m.liveScoring) || q.find(x=>x.m.status==="ON_COURT");
+  const call = !live && q.find(x=>x.m.status==="CALLING");
+  const next = !live && !call ? q[0] : null;
+  const pick = live || call || next;
+  const row = el("div",{class:"tv-court"});
+  const color = pick ? (SCHEDULE_CAT_COLORS[pick.m.category]||"#888") : "#444";
+  row.style.borderLeftColor = color;
+  row.appendChild(el("div",{class:"tv-lap"},[el("small",{},"LAP"), court]));
+  if(!pick){ row.appendChild(el("div",{class:"tv-idle"},"Tidak ada pertandingan")); return row; }
+  const m = pick.m;
+  const meta = el("div",{class:"tv-meta"},[
+    el("span",{class:"tv-chip", style:"background:"+color+";"}, catByCode(m.category).name.toUpperCase()),
+    el("span",{}, " "+(TV_ROUND_SHORT[m.round]||m.round)+" · "+timeLabel(pick.s.timeIndex))
+  ]);
+  if(live && m.liveScoring){
+    const ls = m.liveScoring;
+    const sw = ls.switchSeen && !ls.switchAck;
+    row.appendChild(el("div",{class:"tv-body"},[
+      meta,
+      el("div",{class:"tv-teams"},[
+        el("div",{class:"tv-team"+(ls.servingSide==="A"?" serve":"")},[el("span",{class:"tv-name"}, ls.sideAPlayers.join(" / ")), el("span",{class:"tv-score"}, String(ls.scoreA))]),
+        el("div",{class:"tv-team"+(ls.servingSide==="B"?" serve":"")},[el("span",{class:"tv-name"}, ls.sideBPlayers.join(" / ")), el("span",{class:"tv-score"}, String(ls.scoreB))]),
+      ]),
+      sw ? el("div",{class:"tv-switch"},"TUKAR LAPANGAN") : null
+    ]));
+  } else {
+    row.appendChild(el("div",{class:"tv-body dim"},[
+      meta,
+      el("div",{class:"tv-teams"},[
+        el("div",{class:"tv-team"},[el("span",{class:"tv-name"}, tvPairName(m,"sideA"))]),
+        el("div",{class:"tv-team"},[el("span",{class:"tv-name"}, tvPairName(m,"sideB"))]),
+      ]),
+      el("div",{class:"tv-tag"}, live ? "SEDANG BERMAIN" : call ? "DIPANGGIL — SEGERA KE LAPANGAN" : "BERIKUTNYA")
+    ]));
+  }
+  return row;
+}
+function tvSlideNext(){
+  const box = el("div",{});
+  box.appendChild(el("div",{class:"tv-h"},"PERTANDINGAN BERIKUTNYA"));
+  COURTS.forEach(c=>{
+    const q = tvCourtQueue(c).filter(x=>x.m.status!=="ON_COURT").slice(0,2);
+    const line = el("div",{class:"tv-line"},[el("b",{}, "LAP "+c)]);
+    if(!q.length) line.appendChild(el("span",{class:"dim"}," —"));
+    q.forEach(x=> line.appendChild(el("div",{class:"tv-sub"}, timeLabel(x.s.timeIndex)+" · "+(TV_ROUND_SHORT[x.m.round]||x.m.round)+" · "+tvPairName(x.m,"sideA")+" vs "+tvPairName(x.m,"sideB"))));
+    box.appendChild(line);
+  });
+  return box;
+}
+function tvSlideResults(){
+  const box = el("div",{});
+  box.appendChild(el("div",{class:"tv-h"},"HASIL TERBARU"));
+  const all = [];
+  META.categories.forEach(c=> (MATCHES[c.code]||[]).forEach(m=>{ if(m.status==="FINISHED") all.push(m); }));
+  all.sort((a,b)=> String(b.actualFinishAt||"").localeCompare(String(a.actualFinishAt||"")));
+  if(!all.length) box.appendChild(el("div",{class:"tv-line dim"},"Belum ada pertandingan selesai."));
+  all.slice(0,7).forEach(m=>{
+    const aWin = m.winnerParticipantId===m.sideA.participantId;
+    box.appendChild(el("div",{class:"tv-line"},[
+      el("span",{class:"tv-chip sm", style:"background:"+(SCHEDULE_CAT_COLORS[m.category]||"#888")+";"}, catByCode(m.category).name.toUpperCase()),
+      el("span",{style:"font-weight:"+(aWin?"800":"500")+";"}, " "+tvPairName(m,"sideA")),
+      el("b",{style:"color:var(--gold-bright);"}, "  "+m.scoreA+" – "+m.scoreB+"  "),
+      el("span",{style:"font-weight:"+(aWin?"500":"800")+";"}, tvPairName(m,"sideB"))
+    ]));
+  });
+  return box;
+}
+function tvSlideBracket(catCode){
+  const cat = catByCode(catCode);
+  const box = el("div",{});
+  box.appendChild(el("div",{class:"tv-h", style:"color:"+(SCHEDULE_CAT_COLORS[catCode]||"#fff")+";"}, cat.name.toUpperCase()+" — PEREMPAT FINAL KE FINAL"));
+  const list = (MATCHES[catCode]||[]).filter(m=>["QF","SF","F"].includes(m.round));
+  if(!list.length) box.appendChild(el("div",{class:"tv-line dim"},"Bagan menunggu drawing."));
+  ["QF","SF","F"].forEach(rd=>{
+    list.filter(m=>m.round===rd).sort((a,b)=>a.matchNo-b.matchNo).forEach(m=>{
+      const aWin = m.winnerParticipantId && m.winnerParticipantId===m.sideA.participantId, bWin = m.winnerParticipantId && m.winnerParticipantId===m.sideB.participantId;
+      box.appendChild(el("div",{class:"tv-line"},[
+        el("span",{class:"dim", style:"display:inline-block;min-width:7.5vw;"}, TV_ROUND_SHORT[rd]),
+        el("span",{style:"font-weight:"+(aWin?"800":"500")+";"}, tvPairName(m,"sideA")), el("span",{class:"dim"}," vs "),
+        el("span",{style:"font-weight:"+(bWin?"800":"500")+";"}, tvPairName(m,"sideB")),
+        m.status==="FINISHED" ? el("b",{style:"color:var(--gold-bright);"}, "  "+m.scoreA+"–"+m.scoreB) : null
+      ]));
+    });
+  });
+  return box;
+}
+function tvSlideSponsor(){
+  return el("div",{style:"text-align:center;padding-top:3vh;"},[
+    el("img",{src:LOGO_EVENT, style:"height:22vh;margin-bottom:3vh;"}),
+    el("div",{class:"tv-h", style:"text-align:center;"},"TERIMA KASIH"),
+    el("div",{style:"font-size:2.2vw;color:var(--ink-dim);"},"kepada seluruh sponsor, mitra, panitia, dan peserta"),
+    el("div",{style:"margin-top:4vh;display:flex;gap:4vw;justify-content:center;"},[ el("img",{src:LOGO_PBSAKRAL, style:"height:12vh;"}), el("img",{src:LOGO_ACADEMY, style:"height:12vh;"}) ])
+  ]);
+}
+function viewTv(){
+  const slides = [tvSlideNext, tvSlideResults, ()=>tvSlideBracket("PRIME"), ()=>tvSlideBracket("CORE"), ()=>tvSlideBracket("RISING"), ()=>tvSlideBracket("QUEENS"), tvSlideSponsor];
+  const wrap = el("div",{class:"tv"});
+  const now = new Date();
+  wrap.appendChild(el("div",{class:"tv-head"},[
+    el("img",{src:LOGO_EVENT}),
+    el("div",{class:"tv-title"},["1 DEKADE PB SAKRAL", el("small",{},"BADMINTON TOURNAMENT 2026")]),
+    el("div",{class:"tv-clock"}, String(now.getHours()).padStart(2,"0")+":"+String(now.getMinutes()).padStart(2,"0"))
+  ]));
+  const main = el("div",{class:"tv-main"});
+  const left = el("div",{class:"tv-courts"});
+  COURTS.forEach(c=> left.appendChild(tvCourtRow(c)));
+  const right = el("div",{class:"tv-side"});
+  right.appendChild(slides[Math.floor(tvTick/TV_SLIDE_SECONDS) % slides.length]());
+  main.appendChild(left); main.appendChild(right);
+  wrap.appendChild(main);
+  const foot = el("div",{class:"tv-foot"});
+  META.categories.forEach(c=> foot.appendChild(el("span",{},[el("i",{style:"background:"+(SCHEDULE_CAT_COLORS[c.code]||"#888")+";"}), c.name+" ("+c.level+")"])));
+  wrap.appendChild(foot);
+  if(!tvTimer){
+    tvTimer = setInterval(async ()=>{
+      if(route.name!=="tv"){ clearInterval(tvTimer); tvTimer=null; return; }
+      tvTick += 1;
+      if(tvTick % 5 === 0) await tvRefresh();
+      render();
+    }, 1000);
+    tvRefresh().then(()=>render());
+  }
   return wrap;
 }
 
@@ -5150,6 +5544,8 @@ function render(){
     return;
   }
   let view;
+  if(route.name==="tv"){ app.appendChild(viewTv()); return; }
+  if(refereeScope && !route.name.startsWith("wasit")) route = {name:"wasit", params:{}};
   const SCOPED_ALLOWED = ["admin-list","admin-manual-entry","admin-detail"];
   if(adminSession && adminCategoryScope && route.name.startsWith("admin-") && !SCOPED_ALLOWED.includes(route.name)){
     route = {name:"admin-list", params:{}};
@@ -5176,6 +5572,9 @@ function render(){
     case "admin-referee-setup": view = adminSession? viewAdminRefereeSetup(route.params) : viewAdminLogin(); break;
     case "admin-referee-scoring": view = adminSession? viewAdminRefereeScoring(route.params) : viewAdminLogin(); break;
     case "admin-settings": view = adminSession? viewAdminSettings() : viewAdminLogin(); break;
+    case "wasit": view = refereeScope? viewReferee() : viewAdminLogin(); break;
+    case "wasit-start": view = refereeScope? viewRefereeStart(route.params) : viewAdminLogin(); break;
+    case "wasit-score": view = refereeScope? viewRefereeScoring(route.params) : viewAdminLogin(); break;
     default: view = viewHome();
   }
   app.appendChild(view);
@@ -5198,6 +5597,8 @@ function render(){
   const urlParams = new URLSearchParams(location.search);
   const regParam = urlParams.get("reg");
   if(regParam){ route = {name:"status", params:{regNo: regParam}}; }
+  if(location.hash==="#tv"){ route = {name:"tv", params:{}}; }
+  else if(location.hash==="#wasit"){ route = {name:"admin-login", params:{}}; }
   render();
 })();
 </script>

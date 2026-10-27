@@ -1,6 +1,28 @@
 const { getServiceClient } = require("./_lib/supabaseServer");
 const { readSessionFromRequest } = require("./_lib/session");
-const { isSuper, scopeAllowsCategory, sendJson, requireSession } = require("./_lib/authz");
+const { isSuper, isReferee, refereeCourt, scopeAllowsCategory, sendJson, requireSession } = require("./_lib/authz");
+const { applyRefAction } = require("./_lib/refScoring");
+const crypto = require("crypto");
+
+// Simpan perubahan SATU match dengan CAS retry di server: beberapa wasit yang menyimpan
+// bersamaan (kategori sama) tidak saling menimpa, karena tiap percobaan membaca ulang.
+async function updateOneMatch(supabase, category, matchId, mutator) {
+  for (let i = 0; i < 8; i++) {
+    const { data: row, error } = await supabase.from("matches").select("version, data").eq("category_code", category).maybeSingle();
+    if (error) throw error;
+    if (!row) throw Object.assign(new Error("not_found"), { code: "not_found", status: 404 });
+    const list = (row.data && row.data.list) || [];
+    const m = list.find((x) => x.id === matchId);
+    if (!m) throw Object.assign(new Error("not_found"), { code: "not_found", status: 404 });
+    await mutator(m, list);
+    const { error: e2 } = await supabase.rpc("cas_update_matches", {
+      p_category_code: category, p_expected_version: row.version, p_data: Object.assign({}, row.data, { list }),
+    });
+    if (!e2) return m;
+    if (!String(e2.message).includes("version_conflict")) throw e2;
+  }
+  throw Object.assign(new Error("busy_try_again"), { code: "busy_try_again", status: 503 });
+}
 
 // Same short-string id format as the existing client uid() function, so
 // ids generated here stay compatible with drawing.slots / match
@@ -165,6 +187,63 @@ module.exports = async function handler(req, res) {
     // Everything below requires a valid admin/category session.
     // ------------------------------------------------------------------
     if (!requireSession(session, res)) return;
+
+    // Akun wasit hanya boleh aksi REF_* — semua aksi admin lain ditolak di sini.
+    if (isReferee(session) && !String(action).startsWith("REF_")) {
+      return sendJson(res, 403, { ok: false, error: "forbidden_scope" });
+    }
+
+    if (String(action).startsWith("REF_")) {
+      if (!isReferee(session) && !isSuper(session)) return sendJson(res, 403, { ok: false, error: "forbidden_scope" });
+      const { category, matchId } = payload;
+      if (!category || !matchId) return sendJson(res, 400, { ok: false, error: "category_and_match_required" });
+      try {
+        // Wasit lapangan X hanya boleh match yang dijadwalkan di lapangan X; cadangan (R) dan Super semua.
+        const court = refereeCourt(session);
+        if (court && court !== "R") {
+          const { data: sch } = await supabase.from("schedule").select("data").eq("id", 1).maybeSingle();
+          const list = (sch && sch.data && sch.data.list) || [];
+          if (!list.some((e) => e.matchId === matchId && e.category === category && e.court === court)) {
+            return sendJson(res, 403, { ok: false, error: "forbidden_court" });
+          }
+        }
+        const { data: st } = await supabase.from("tournament_settings").select("scoring_target").eq("id", 1).maybeSingle();
+        const target = (st && Number(st.scoring_target)) || 42;
+        const result = await updateOneMatch(supabase, category, matchId, async (m, list) => {
+          let names = {};
+          if (action === "REF_START") {
+            const ids = [m.sideA, m.sideB].filter((x) => x && x.type === "participant" && x.participantId).map((x) => x.participantId);
+            if (ids.length) {
+              const { data: regs } = await supabase.from("registrations").select("id, player1, player2").in("id", ids);
+              (regs || []).forEach((r) => { names[r.id] = [r.player1, r.player2]; });
+            }
+          }
+          applyRefAction(action, m, list, payload, { who: session.scope, nowIso: nowIso(), target, names });
+        });
+        return sendJson(res, 200, { ok: true, data: result });
+      } catch (e) {
+        if (e && e.code && e.status) return sendJson(res, e.status, { ok: false, error: e.code });
+        throw e;
+      }
+    }
+
+    if (action === "SET_REFEREE_PIN") {
+      if (!isSuper(session)) return sendJson(res, 403, { ok: false, error: "forbidden_scope" });
+      const code = payload.court;
+      if (!["A", "B", "C", "D", "E", "R"].includes(code)) return sendJson(res, 400, { ok: false, error: "invalid_court" });
+      // PIN acak 6 digit, dibuat di server, tidak dicatat di log, dan tidak boleh sama dengan PIN akun lain.
+      for (let i = 0; i < 20; i++) {
+        const pin = String(crypto.randomInt(100000, 1000000));
+        const { data: clash, error: e1 } = await supabase.rpc("find_admin_scope_by_pin", { p_pin: pin });
+        if (e1) throw e1;
+        if (clash) continue;
+        const { error: e2 } = await supabase.rpc("set_admin_pin", { p_scope: "WASIT_" + code, p_new_pin: pin });
+        if (e2) throw e2;
+        res.setHeader("Cache-Control", "no-store");
+        return sendJson(res, 200, { ok: true, pin });
+      }
+      return sendJson(res, 500, { ok: false, error: "pin_generation_failed" });
+    }
 
     if (action === "MARK_PAID" || action === "VERIFY_PAYMENT") {
       const { id, method, amount, sender, verifiedBy } = payload;

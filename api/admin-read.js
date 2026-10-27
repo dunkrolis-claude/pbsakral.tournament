@@ -1,6 +1,6 @@
 const { getServiceClient } = require("./_lib/supabaseServer");
 const { readSessionFromRequest } = require("./_lib/session");
-const { isSuper, scopeAllowsCategory, sendJson, requireSession } = require("./_lib/authz");
+const { isSuper, isReferee, refereeCourt, scopeAllowsCategory, sendJson, requireSession } = require("./_lib/authz");
 
 // Fields exposed for the admin listing/index view (Pendaftar/Peserta pages).
 // This is a superset of registrations_public (adds whatsapp/payment/deposit
@@ -21,7 +21,48 @@ module.exports = async function handler(req, res) {
   const resource = req.query.resource;
   const supabase = getServiceClient();
 
+  // Akun wasit hanya boleh membaca papan wasit.
+  if (isReferee(session) && resource !== "ref_board") {
+    return sendJson(res, 403, { ok: false, error: "forbidden_scope" });
+  }
+
   try {
+    if (resource === "ref_board") {
+      if (!isReferee(session) && !isSuper(session)) return sendJson(res, 403, { ok: false, error: "forbidden_scope" });
+      const court = isReferee(session) ? refereeCourt(session) : "R";
+      const { data: sch, error: e1 } = await supabase.from("schedule").select("data").eq("id", 1).maybeSingle();
+      if (e1) throw e1;
+      const all = (sch && sch.data && sch.data.list) || [];
+      const entries = court === "R" ? all : all.filter((e) => e.court === court);
+      const { data: st } = await supabase.from("tournament_settings").select("scoring_target").eq("id", 1).maybeSingle();
+      const { data: mrows, error: e2 } = await supabase.from("matches").select("category_code, data");
+      if (e2) throw e2;
+      const wanted = new Set(entries.map((e) => e.category + "|" + e.matchId));
+      const matches = [];
+      (mrows || []).forEach((r) => {
+        ((r.data && r.data.list) || []).forEach((m) => {
+          if (wanted.has(r.category_code + "|" + m.id)) matches.push(Object.assign({ category: r.category_code }, m));
+        });
+      });
+      const ids = new Set();
+      matches.forEach((m) => [m.sideA, m.sideB].forEach((x) => { if (x && x.type === "participant" && x.participantId) ids.add(x.participantId); }));
+      const names = {};
+      if (ids.size) {
+        const { data: regs, error: e3 } = await supabase.from("registrations").select("id, player1, player2").in("id", [...ids]);
+        if (e3) throw e3;
+        (regs || []).forEach((r) => { names[r.id] = [r.player1, r.player2]; });
+      }
+      return sendJson(res, 200, { ok: true, data: { court, entries, matches, names, target: (st && Number(st.scoring_target)) || 42 } });
+    }
+
+    if (resource === "referee_accounts") {
+      if (!isSuper(session)) return sendJson(res, 403, { ok: false, error: "forbidden_scope" });
+      // hanya scope + waktu; pin_hash tidak pernah dipilih
+      const { data, error } = await supabase.from("admin_credentials").select("scope, updated_at");
+      if (error) throw error;
+      return sendJson(res, 200, { ok: true, data: (data || []).filter((r) => /^WASIT_[A-ER]$/.test(r.scope)) });
+    }
+
     if (resource === "registrations_index") {
       let query = supabase.from("registrations").select(INDEX_COLUMNS);
       if (!isSuper(session)) {

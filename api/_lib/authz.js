@@ -8,6 +8,14 @@ function isSuper(session) {
   return !!session && session.scope === "SUPER";
 }
 
+// Akun wasit: scope "WASIT_A".."WASIT_E" (per lapangan) dan "WASIT_R" (cadangan, semua lapangan).
+function isReferee(session) {
+  return !!session && typeof session.scope === "string" && /^WASIT_[A-ER]$/.test(session.scope);
+}
+function refereeCourt(session) {
+  return isReferee(session) ? session.scope.slice(6) : null;
+}
+
 function scopeAllowsCategory(session, categoryCode) {
   if (!session) return false;
   if (session.scope === "SUPER") return true;
@@ -27,4 +35,4 @@ function requireSession(session, res) {
   return true;
 }
 
-module.exports = { isSuper, scopeAllowsCategory, sendJson, requireSession };
+module.exports = { isReferee, refereeCourt, isSuper, scopeAllowsCategory, sendJson, requireSession };
