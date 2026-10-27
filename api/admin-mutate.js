@@ -372,11 +372,12 @@ module.exports = async function handler(req, res) {
 
     if (action === "ADD_EXPENSE") {
       if (!isSuper(session)) return sendJson(res, 403, { ok: false, error: "forbidden_scope" });
-      const { description, amount, source } = payload;
+      const { description, amount, source, budgetItemId } = payload;
       if (!description || !amount || !source) {
         return sendJson(res, 400, { ok: false, error: "missing_fields" });
       }
       const row = { id: genCompatId(), description, amount: Number(amount), source, created_at: nowIso() };
+      if (budgetItemId) row.budget_item_id = String(budgetItemId);
       const { data, error } = await supabase.from("expenses").insert(row).select().single();
       if (error) throw error;
       return sendJson(res, 200, { ok: true, data });
@@ -387,6 +388,109 @@ module.exports = async function handler(req, res) {
       const { id } = payload;
       if (!id) return sendJson(res, 400, { ok: false, error: "id_required" });
       const { error } = await supabase.from("expenses").delete().eq("id", id);
+      if (error) throw error;
+      return sendJson(res, 200, { ok: true });
+    }
+
+    // ------------------------------------------------------------------
+    // Keuangan (SUPER only): diskon pendaftar, pemasukan lain, anggaran.
+    // ------------------------------------------------------------------
+    if (action === "SET_DISCOUNT") {
+      if (!isSuper(session)) return sendJson(res, 403, { ok: false, error: "forbidden_scope" });
+      const { id } = payload;
+      const amount = Math.round(Number(payload.amount));
+      const note = String(payload.note || "").trim().slice(0, 300);
+      if (!id) return sendJson(res, 400, { ok: false, error: "id_required" });
+      if (!Number.isFinite(amount) || amount < 0) return sendJson(res, 400, { ok: false, error: "invalid_amount" });
+      if (amount > 0 && !note) return sendJson(res, 400, { ok: false, error: "note_required" });
+
+      const { data: reg, error: fetchErr } = await supabase
+        .from("registrations").select("id, category, payment, payment_status").eq("id", id).maybeSingle();
+      if (fetchErr) throw fetchErr;
+      if (!reg) return sendJson(res, 404, { ok: false, error: "not_found" });
+      // Diskon hanya sebelum lunas, supaya tidak mengubah angka kas yang sudah tercatat.
+      if (reg.payment_status === "PAID") return sendJson(res, 409, { ok: false, error: "already_paid" });
+
+      const { data: settings, error: settingsErr } = await supabase
+        .from("tournament_settings").select("categories").eq("id", 1).maybeSingle();
+      if (settingsErr) throw settingsErr;
+      const cat = (settings?.categories || []).find((c) => c.code === reg.category);
+      if (!cat) return sendJson(res, 400, { ok: false, error: "unknown_category" });
+      if (amount > cat.fee) return sendJson(res, 400, { ok: false, error: "discount_exceeds_fee" });
+
+      const due = cat.fee - amount;
+      const payment = { ...(reg.payment || {}), amountDue: due };
+      const { data, error } = await supabase
+        .from("registrations")
+        .update({ discount_amount: amount, discount_note: amount > 0 ? note : "", payment_amount_due: due, payment, updated_at: nowIso() })
+        .eq("id", id).select().single();
+      if (error) throw error;
+      return sendJson(res, 200, { ok: true, data });
+    }
+
+    if (action === "ADD_INCOME_OTHER") {
+      if (!isSuper(session)) return sendJson(res, 403, { ok: false, error: "forbidden_scope" });
+      const kind = String(payload.kind || "");
+      const description = String(payload.description || "").trim();
+      const amount = Math.round(Number(payload.amount) || 0);
+      const committed = Math.round(Number(payload.committed) || 0);
+      if (!["SPONSOR", "KAS_PB", "KOK_SISA", "LAINNYA"].includes(kind) || !description) {
+        return sendJson(res, 400, { ok: false, error: "missing_fields" });
+      }
+      if (amount < 0 || committed < 0 || (amount === 0 && committed === 0)) {
+        return sendJson(res, 400, { ok: false, error: "invalid_amount" });
+      }
+      const row = {
+        id: genCompatId(), kind, description, amount, committed,
+        note: String(payload.note || "").slice(0, 300),
+        budget_item_id: payload.budgetItemId ? String(payload.budgetItemId) : null,
+        created_at: nowIso(),
+      };
+      const { data, error } = await supabase.from("income_other").insert(row).select().single();
+      if (error) throw error;
+      return sendJson(res, 200, { ok: true, data });
+    }
+
+    if (action === "REMOVE_INCOME_OTHER") {
+      if (!isSuper(session)) return sendJson(res, 403, { ok: false, error: "forbidden_scope" });
+      const { id } = payload;
+      if (!id) return sendJson(res, 400, { ok: false, error: "id_required" });
+      const { error } = await supabase.from("income_other").delete().eq("id", id);
+      if (error) throw error;
+      return sendJson(res, 200, { ok: true });
+    }
+
+    if (action === "SAVE_BUDGET_ITEM") {
+      if (!isSuper(session)) return sendJson(res, 403, { ok: false, error: "forbidden_scope" });
+      const section = String(payload.section || "");
+      const label = String(payload.label || "").trim();
+      const groupName = String(payload.groupName || "").trim();
+      const qty = Number(payload.qty);
+      const unitPrice = Math.round(Number(payload.unitPrice));
+      if (!["INCOME", "EXPENSE"].includes(section) || !label || !groupName) {
+        return sendJson(res, 400, { ok: false, error: "missing_fields" });
+      }
+      if (!Number.isFinite(qty) || qty < 0 || !Number.isFinite(unitPrice) || unitPrice < 0) {
+        return sendJson(res, 400, { ok: false, error: "invalid_amount" });
+      }
+      const row = {
+        id: payload.id ? String(payload.id) : "bi-" + genCompatId(),
+        section, group_name: groupName, label, qty, unit_price: unitPrice,
+        note: String(payload.note || "").slice(0, 300),
+        sort: Math.round(Number(payload.sort) || 999),
+      };
+      // budget_key / is_target_only hanya dari seed — tidak bisa diubah klien
+      // supaya realisasi otomatis (REG:*, DEPOSIT_KOK) tidak bisa dibelokkan.
+      const { data, error } = await supabase.from("budget_items").upsert(row).select().single();
+      if (error) throw error;
+      return sendJson(res, 200, { ok: true, data });
+    }
+
+    if (action === "REMOVE_BUDGET_ITEM") {
+      if (!isSuper(session)) return sendJson(res, 403, { ok: false, error: "forbidden_scope" });
+      const { id } = payload;
+      if (!id) return sendJson(res, 400, { ok: false, error: "id_required" });
+      const { error } = await supabase.from("budget_items").delete().eq("id", id);
       if (error) throw error;
       return sendJson(res, 200, { ok: true });
     }
@@ -407,6 +511,7 @@ module.exports = async function handler(req, res) {
       if (e1) throw e1;
       const { error: e2 } = await supabase.from("expenses").delete().neq("id", "__never__");
       if (e2) throw e2;
+      await supabase.from("income_other").delete().neq("id", "__never__"); // draft anggaran (budget_items) sengaja dipertahankan
       const cats = ["PRIME", "CORE", "RISING", "QUEENS"];
       for (const c of cats) {
         await supabase.from("drawing").update({ data: { locked: false, slots: [], auditLog: [] }, version: 1, updated_at: nowIso() }).eq("category_code", c);

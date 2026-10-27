@@ -265,6 +265,9 @@
   .sched-cell{min-width:88px;height:44px;font-size:10px;font-weight:700;cursor:pointer;padding:3px;line-height:1.25;}
   .sched-cell.empty{color:var(--ink-faint);}
   .sched-cell.filled{background:rgba(212,175,55,0.10);color:var(--gold-bright);}
+  .sched-cell.draft{background:transparent;color:var(--ink-dim);border:1px dashed var(--line);cursor:default;}
+  .sched-cell .sc-sub{font-weight:600;font-size:9px;color:var(--ink-faint);margin-top:1px;white-space:normal;}
+  .sched-cell .sc-ref{font-weight:600;font-size:9px;color:var(--gold-dim);margin-top:1px;}
   .sched-cell:hover{background:rgba(212,175,55,0.18);}
 
   .mc-card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:14px;margin-bottom:10px;}
@@ -403,6 +406,7 @@ function dbRowToReg(row){
     depositTransactions: row.deposit_transactions || [],
     notifications: row.notifications || [],
     isDemo: !!row.is_demo,
+    discountAmount: row.discount_amount||0, discountNote: row.discount_note||"",
     createdAt: row.created_at, updatedAt: row.updated_at,
   };
 }
@@ -414,6 +418,7 @@ function regSummaryFromIndexRow(row){
     paymentAmountDue: row.payment_amount_due||0, paymentAmountPaid: row.payment_amount_paid||0,
     paymentStatus: row.payment_status||"UNPAID", paymentMethod: row.payment&&row.payment.method||"TRANSFER",
     depositInitial: row.deposit_initial||0, depositBalance: row.deposit_balance||0,
+    discountAmount: row.discount_amount||0, discountNote: row.discount_note||"",
     isDemo: !!row.is_demo,
   };
 }
@@ -544,14 +549,66 @@ const TOURNAMENT_DAYS = [
   {day:1, label:"Sabtu, 31 Okt 2026"},
   {day:2, label:"Minggu, 1 Nov 2026"},
 ];
-const SLOTS_PER_DAY = 24; // 09:00 to 21:00, 30-minute slots
-const COURTS = ["A","B","C","D"];
+const SLOTS_PER_DAY = 27; // 08:00 to 21:30, 30-minute slots
+const COURTS = ["A","B","C","D","E"];
 const REST_MIN_GAP = 1; // minimum empty slots between a participant's matches
 function timeLabel(idx){
-  const totalMin = 9*60 + idx*30;
+  const totalMin = 8*60 + idx*30;
   const h = Math.floor(totalMin/60), m = totalMin%60;
   return String(h).padStart(2,"0")+":"+String(m).padStart(2,"0");
 }
+/* Template jadwal (dari sheet "Jadwal" RAB): satu baris = satu slot 30 menit, 5 lapangan A-E.
+   L = kategori pasangan "kecil" hari itu (Hari 1 Rising, Hari 2 Queens), H = kategori "besar"
+   (Hari 1 Prime, Hari 2 Core). "-" = kosong. Template hanya kerangka: nama peserta menyusul
+   setelah drawing, dan jadwal tetap bisa digeser manual per match. */
+const SCHEDULE_TEMPLATE_ROWS = [
+  "LR32 LR32 LR32 LR32 LR32",
+  "LR32 LR32 LR32 LR32 LR32",
+  "LR32 LR32 LR32 LR32 LR32",
+  "LR32 HR64 HR64 HR64 HR64",
+  "HR64 HR64 HR64 HR64 HR64",
+  "LR16 LR16 LR16 LR16 LR16",
+  "LR16 LR16 LR16 HR64 HR64",
+  "HR64 HR64 HR64 HR64 HR64",
+  "LQF LQF LQF LQF HR64",
+  "HR64 HR64 HR64 HR64 HR64",
+  "LSF LSF HR64 HR64 HR64",
+  "HR64 HR64 HR64 HR64 HR64",
+  "LF HR64 HR64 - -",
+  "- - - - -",
+  "HR32 HR32 HR32 HR32 HR32",
+  "HR32 HR32 HR32 HR32 HR32",
+  "HR32 HR32 HR32 HR32 HR32",
+  "HR32 - - - -",
+  "- - - - -",
+  "HR16 HR16 HR16 HR16 HR16",
+  "HR16 HR16 HR16 - -",
+  "- - - - -",
+  "HQF HQF HQF HQF -",
+  "- - - - -",
+  "HSF HSF - - -",
+  "- - - - -",
+  "HF - - - -"
+];
+const SCHEDULE_DAY_CATS = { 1:{L:"RISING", H:"PRIME"}, 2:{L:"QUEENS", H:"CORE"} };
+const SCHEDULE_PLAN = (function(){
+  const plan = [], counters = {};
+  [1,2].forEach(day=>{
+    SCHEDULE_TEMPLATE_ROWS.forEach((row, timeIndex)=>{
+      row.split(" ").forEach((tok, ci)=>{
+        if(tok==="-") return;
+        const category = SCHEDULE_DAY_CATS[day][tok[0]];
+        const round = tok.slice(1);
+        const k = category+"|"+round;
+        counters[k] = (counters[k]||0)+1;
+        plan.push({ day, timeIndex, court: COURTS[ci], category, round, matchNo: counters[k] });
+      });
+    });
+  });
+  return plan;
+})();
+const SCHEDULE_PLAN_BY_CELL = {};
+SCHEDULE_PLAN.forEach(p=>{ SCHEDULE_PLAN_BY_CELL[p.day+"-"+p.timeIndex+"-"+p.court] = p; });
 const ROUND_LABELS = {R64:"Babak 64 Besar", R32:"32 Besar", R16:"16 Besar", QF:"Perempat Final", SF:"Semifinal", F:"Final"};
 function roundNamesFor(quota){ return quota===64 ? ["R64","R32","R16","QF","SF","F"] : ["R32","R16","QF","SF","F"]; }
 
@@ -683,14 +740,14 @@ let EXPENSES = [];
 async function loadExpenses(){
   try{
     const rows = await apiRead("expenses");
-    EXPENSES = rows.map(r=>({ id:r.id, description:r.description, amount:r.amount, source:r.source, createdAt:r.created_at }))
+    EXPENSES = rows.map(r=>({ id:r.id, description:r.description, amount:r.amount, source:r.source, budgetItemId:r.budget_item_id||null, createdAt:r.created_at }))
       .sort((a,b)=> (b.createdAt||"").localeCompare(a.createdAt||""));
   }catch(e){ console.error(e); EXPENSES = []; }
 }
-async function addExpense(description, amount, source){
+async function addExpense(description, amount, source, budgetItemId){
   try{
-    const result = await apiMutate("ADD_EXPENSE", { description, amount, source: source||"CASH" });
-    EXPENSES.unshift({ id:result.data.id, description:result.data.description, amount:result.data.amount, source:result.data.source, createdAt:result.data.created_at });
+    const result = await apiMutate("ADD_EXPENSE", { description, amount, source: source||"CASH", budgetItemId: budgetItemId||undefined });
+    EXPENSES.unshift({ id:result.data.id, description:result.data.description, amount:result.data.amount, source:result.data.source, budgetItemId:result.data.budget_item_id||null, createdAt:result.data.created_at });
     return true;
   }catch(e){ console.error(e); showToast("Gagal menyimpan pengeluaran."); return false; }
 }
@@ -702,10 +759,39 @@ async function removeExpense(id){
   }catch(e){ console.error(e); showToast("Gagal menghapus pengeluaran."); return false; }
 }
 
+/* ============ KEUANGAN LANJUTAN (SUPER only): pemasukan lain + draft anggaran ============ */
+let INCOME_OTHER = [];   // sponsor, kas PB, jual kok sisa, lainnya
+let BUDGET_ITEMS = [];   // draft anggaran (pemasukan & pengeluaran)
+let financeExtraError = false;
+const INCOME_KINDS = { SPONSOR:"Sponsor", KAS_PB:"Kas PB Sakral", KOK_SISA:"Jual Kok Sisa", LAINNYA:"Lainnya" };
+async function loadFinanceExtra(){
+  financeExtraError = false;
+  if(!adminSession || adminCategoryScope){ INCOME_OTHER = []; BUDGET_ITEMS = []; return; }
+  try{
+    const [inc, bud] = await Promise.all([apiRead("income_other"), apiRead("budget_items")]);
+    INCOME_OTHER = inc.map(r=>({ id:r.id, kind:r.kind, description:r.description, committed:r.committed||0, amount:r.amount||0, note:r.note||"", budgetItemId:r.budget_item_id||null, createdAt:r.created_at }));
+    BUDGET_ITEMS = bud.map(r=>({ id:r.id, section:r.section, group:r.group_name, label:r.label, qty:Number(r.qty)||0, unitPrice:r.unit_price||0, key:r.budget_key||null, targetOnly:!!r.is_target_only, sort:r.sort||0, note:r.note||"" }));
+  }catch(e){ console.error(e); INCOME_OTHER = []; BUDGET_ITEMS = []; financeExtraError = true; }
+}
+function budgetPlanned(item){ return Math.round((item.qty||0)*(item.unitPrice||0)); }
+function budgetRealized(item){
+  if(item.section==="EXPENSE") return EXPENSES.filter(e=>e.budgetItemId===item.id).reduce((s,e)=>s+(e.amount||0),0);
+  const reg = INDEX.filter(r=>r.status==="REGISTERED");
+  if(item.key && item.key.startsWith("REG:")){
+    const code = item.key.slice(4);
+    return reg.filter(r=>r.category===code).reduce((s,r)=>s+(r.paymentAmountPaid||0),0);
+  }
+  if(item.key==="DEPOSIT_KOK") return reg.reduce((s,r)=>s+(r.depositInitial||0),0);
+  return INCOME_OTHER.filter(x=>x.budgetItemId===item.id).reduce((s,x)=>s+(x.amount||0),0);
+}
+
 /* ============ PHASE 2 STATE: DRAWING / MATCHES / SCHEDULE ============ */
 let DRAWING = {};   // { PRIME: {locked, slots:[participantId|null,...], auditLog:[...]}, ... }
 let MATCHES = {};   // { PRIME: [ {id,category,round,roundIndex,matchNo,sideA,sideB}, ... ], ... }
 let SCHEDULE = [];  // [ {id, matchId, category, day, timeIndex, court} ]
+// Wasit default per lapangan (A-E) + 1 cadangan. Disimpan di schedule.data.refDefaults
+// (tanpa tabel baru). Override manual per match tetap lewat match.refereeName.
+let REF_DEFAULTS = { A:"", B:"", C:"", D:"", E:"", RESERVE:"" };
 // CAS version trackers (not part of the original Firebase model — required
 // for optimistic concurrency now that these aggregates are single DB rows).
 let DRAWING_VERSION = {};
@@ -739,6 +825,7 @@ async function loadPhase2(){
     if(adminSession){ row = await apiRead("schedule"); }
     else { const { data, error } = await sb.from("schedule").select("*").eq("id",1).maybeSingle(); if(error) throw error; row = data; }
     SCHEDULE = row ? (row.data.list||[]) : [];
+    REF_DEFAULTS = Object.assign({ A:"", B:"", C:"", D:"", E:"", RESERVE:"" }, (row && row.data.refDefaults) || {});
     SCHEDULE_VERSION = row ? row.version : 1;
   }catch(e){ console.error(e); SCHEDULE = []; SCHEDULE_VERSION = 1; }
 }
@@ -774,7 +861,7 @@ async function saveMatches(){
 }
 async function saveSchedule(){
   try{
-    const result = await apiMutate("SAVE_SCHEDULE", { expectedVersion: SCHEDULE_VERSION||1, data: {list: SCHEDULE} });
+    const result = await apiMutate("SAVE_SCHEDULE", { expectedVersion: SCHEDULE_VERSION||1, data: {list: SCHEDULE, refDefaults: REF_DEFAULTS} });
     SCHEDULE_VERSION = result.data.version;
     return true;
   }catch(e){
@@ -838,6 +925,13 @@ function matchSideLabel(catCode, side){
   return "Pemenang " + ROUND_LABELS[ref.round] + " #" + ref.matchNo;
 }
 function scheduleFor(matchId){ return SCHEDULE.find(s=>s.matchId===matchId); }
+// Wasit efektif = override manual di match, jika kosong pakai default lapangan tempat match dijadwalkan.
+function effectiveReferee(match){
+  if(!match) return "";
+  if(match.refereeName) return match.refereeName;
+  const s = scheduleFor(match.id);
+  return s ? (REF_DEFAULTS[s.court]||"") : "";
+}
 function scheduleOccupant(day, timeIndex, court){ return SCHEDULE.find(s=>s.day===day && s.timeIndex===timeIndex && s.court===court); }
 function participantSchedulesOnDay(participantId, day, excludeScheduleId){
   const out = [];
@@ -1694,7 +1788,7 @@ function categoryConfirmCard(reg){
     const full = isQuotaFull(reg.pendingCategory);
     reg.category = reg.pendingCategory;
     reg.pendingCategory = null;
-    reg.payment.amountDue = newCat.fee;
+    reg.payment.amountDue = Math.max(0, newCat.fee - Math.min(reg.discountAmount||0, newCat.fee));
     reg.status = full ? "WAITING_LIST" : "WAITING_PAYMENT";
     const ok = await persistReg(reg);
     if(ok){ showToast("Kategori dikonfirmasi."); render(); }
@@ -2104,7 +2198,7 @@ async function tryLogin(val){
   if(!scope){ showToast("Kode akses salah."); return; }
   adminSession = true;
   adminCategoryScope = (scope==="SUPER") ? null : scope;
-  await Promise.all([loadIndex(), loadPhase2()]); // admin can now load registrations + phase2 data
+  await Promise.all([loadIndex(), loadPhase2(), adminCategoryScope? null : loadExpenses(), loadFinanceExtra()]); // admin can now load registrations + phase2 + keuangan
   nav(adminCategoryScope ? "admin-list" : "admin-dashboard");
 }
 
@@ -2420,6 +2514,8 @@ let revisionRequestModal = false;
 let revisionPrefill = "";
 let manualWaModal = false;
 let markPaidModal = false;
+let discountModal = false;
+let discountState = {amount:"", note:""};
 let markPaidState = {};
 let paidReceipt = null; // {regNo, name, category, amount, method}
 
@@ -2490,7 +2586,16 @@ function viewAdminDetail(params){
   const payCard = el("div",{class:"card"});
   payCard.appendChild(el("div",{style:"font-weight:800;font-size:13.5px;margin-bottom:8px;"},"Pembayaran"));
   payCard.appendChild(el("div",{class:"kv"},[el("span",{class:"k"},"Metode"),el("span",{class:"v"}, reg.payment.method==="CASH" ? "\ud83d\udcb5 Tunai di Tempat" : "\ud83c\udfe6 Transfer/QRIS")]));
+  if((reg.discountAmount||0)>0){
+    payCard.appendChild(el("div",{class:"kv"},[el("span",{class:"k"},"Biaya Normal"),el("span",{class:"v"},rupiah(reg.payment.amountDue + reg.discountAmount))]));
+    payCard.appendChild(el("div",{class:"kv"},[el("span",{class:"k"},"Diskon"),el("span",{class:"v", style:"color:var(--ok);"},"\u2212"+rupiah(reg.discountAmount))]));
+    payCard.appendChild(el("div",{class:"kv"},[el("span",{class:"k"},"Alasan Diskon"),el("span",{class:"v"}, reg.discountNote||"-")]));
+  }
   payCard.appendChild(el("div",{class:"kv"},[el("span",{class:"k"},"Jumlah Ditagih"),el("span",{class:"v"},rupiah(reg.payment.amountDue))]));
+  if(!adminCategoryScope && reg.payment.status!=="PAID" && reg.status!=="REGISTERED"){
+    payCard.appendChild(el("button",{class:"btn btn-outline btn-sm", style:"margin-top:8px;", onclick:()=>{ discountModal=true; discountState={amount:String(reg.discountAmount||""), note:reg.discountNote||""}; render(); }},
+      (reg.discountAmount>0 ? "\ud83c\udff7 Ubah Diskon" : "\ud83c\udff7 Beri Diskon")));
+  }
   if(reg.payment.amountPaid){
     payCard.appendChild(el("div",{class:"kv"},[el("span",{class:"k"}, reg.payment.method==="CASH"?"Nominal Diterima":"Nominal Transfer"),el("span",{class:"v", style: reg.payment.amountPaid!==reg.payment.amountDue? "color:var(--warn)":""},rupiah(reg.payment.amountPaid))]));
     payCard.appendChild(el("div",{class:"kv"},[el("span",{class:"k"}, reg.payment.method==="CASH"?"Nama Peserta":"Nama Pengirim"),el("span",{class:"v"},reg.payment.senderName)]));
@@ -2706,9 +2811,56 @@ function viewAdminDetail(params){
   if(revisionRequestModal) wrap.appendChild(renderRevisionRequestModal(reg));
   if(manualWaModal) wrap.appendChild(renderManualWaModal(reg));
   if(markPaidModal) wrap.appendChild(renderMarkPaidModal(reg));
+  if(discountModal) wrap.appendChild(renderDiscountModal(reg));
   if(paidReceipt) wrap.appendChild(renderPaidReceiptModal());
 
   return wrap;
+}
+
+function renderDiscountModal(reg){
+  const cat = catByCode(reg.category);
+  const close = ()=>{ discountModal=false; render(); };
+  const overlay = el("div",{class:"modal-overlay", onclick:(e)=>{ if(e.target===overlay) close(); }});
+  const modal = el("div",{class:"modal"});
+  modal.appendChild(el("h3",{},"Diskon Pendaftaran"));
+  modal.appendChild(el("p",{}, reg.player1+" / "+reg.player2+" \u00b7 "+cat.name+" \u00b7 biaya normal "+rupiah(cat.fee)));
+  const f1 = el("div",{class:"field"});
+  f1.appendChild(el("label",{},"Nominal diskon (Rp)"));
+  const amtIn = el("input",{type:"number", value:discountState.amount, placeholder:"0 = tanpa diskon", style:inputStyle()});
+  amtIn.addEventListener("input",(e)=>{ discountState.amount=e.target.value; preview.textContent = previewText(); });
+  f1.appendChild(amtIn); modal.appendChild(f1);
+  const f2 = el("div",{class:"field"});
+  f2.appendChild(el("label",{},"Keterangan (wajib jika ada diskon)"));
+  const noteIn = el("input",{type:"text", value:discountState.note, placeholder:"mis. anggota PB Sakral, sponsor, early bird", style:inputStyle()});
+  noteIn.addEventListener("input",(e)=>{ discountState.note=e.target.value; });
+  f2.appendChild(noteIn); modal.appendChild(f2);
+  const previewText = ()=>{ const a = Math.max(0, Number(discountState.amount)||0); return "Yang harus dibayar: "+rupiah(Math.max(0, cat.fee - a)); };
+  const preview = el("div",{style:"font-size:12.5px;font-weight:700;color:var(--gold-bright);margin-bottom:8px;"}, previewText());
+  modal.appendChild(preview);
+  const actions = el("div",{class:"modal-actions"});
+  actions.appendChild(el("button",{class:"btn btn-outline", onclick:close},"Batal"));
+  actions.appendChild(el("button",{class:"btn btn-gold", onclick: async ()=>{
+    const amt = Math.round(Number(discountState.amount)||0);
+    const note = discountState.note.trim();
+    if(amt<0){ showToast("Nominal diskon tidak valid."); return; }
+    if(amt>cat.fee){ showToast("Diskon tidak boleh melebihi biaya registrasi."); return; }
+    if(amt>0 && !note){ showToast("Isi keterangan diskon."); return; }
+    try{
+      const result = await apiMutate("SET_DISCOUNT", { id: reg.id, amount: amt, note });
+      applyRegFromServer(reg, result.data);
+      await loadIndex();
+      discountModal=false;
+      showToast(amt>0 ? "Diskon tersimpan." : "Diskon dihapus.");
+      render();
+    }catch(e){
+      console.error(e);
+      const code = e.body && e.body.error;
+      showToast(code==="already_paid" ? "Sudah lunas \u2014 diskon tidak bisa diubah." : code==="note_required" ? "Isi keterangan diskon." : code==="discount_exceeds_fee" ? "Diskon melebihi biaya registrasi." : "Gagal menyimpan diskon.");
+    }
+  }},"Simpan"));
+  modal.appendChild(actions);
+  overlay.appendChild(modal);
+  return overlay;
 }
 
 function renderCategoryMoveModal(reg){
@@ -3184,29 +3336,54 @@ function viewAdminBracket(){
 
 /* ============ ADMIN: SCHEDULE (Phase 2) ============ */
 let scheduleActiveDay = 1;
+function planMatchFor(p){ return (MATCHES[p.category]||[]).find(m=>m.round===p.round && m.matchNo===p.matchNo); }
+function matchIsEmptyShell(m){
+  return m.sideA.type==="participant" && m.sideB.type==="participant" && !m.sideA.participantId && !m.sideB.participantId;
+}
+// Pasang match yang sudah ada (dari drawing) ke kerangka template. Aman dijalankan berulang:
+// tidak menimpa match yang sudah dijadwalkan atau slot yang sudah terisi manual.
+async function applyScheduleTemplate(){
+  let added = 0;
+  SCHEDULE_PLAN.forEach(p=>{
+    const m = planMatchFor(p);
+    if(!m || matchIsEmptyShell(m) || scheduleFor(m.id)) return;
+    if(scheduleOccupant(p.day, p.timeIndex, p.court)) return;
+    SCHEDULE.push({ id:uid(), matchId:m.id, category:p.category, day:p.day, timeIndex:p.timeIndex, court:p.court });
+    if(!m.status) m.status = "SCHEDULED";
+    added++;
+  });
+  if(added>0){
+    const okS = await saveSchedule();
+    if(okS) await saveMatches();
+  }
+  return added;
+}
+
 function viewAdminSchedule(){
   const wrap = el("div",{});
   wrap.appendChild(topbar("admin"));
   const sec = el("div",{class:"section"});
   sec.appendChild(adminTabs("admin-schedule"));
   sec.appendChild(el("div",{class:"section-title"},"Jadwal "+COURTS.length+" Lapangan"));
+  sec.appendChild(el("div",{style:"color:var(--ink-dim);font-size:12px;margin-bottom:12px;"},
+    "Kerangka jadwal mengikuti template RAB (08:00\u201321:30). Kotak putus-putus = slot rencana; nama peserta terisi otomatis setelah drawing di-lock dan template diterapkan. Ketuk kotak yang sudah terisi untuk menggeser match atau mengganti wasit."));
+
+  sec.appendChild(renderRefereeDefaultsCard());
 
   const totalMatches = META.categories.reduce((s,c)=>s+(MATCHES[c.code]||[]).length,0);
-  if(totalMatches===0){
-    sec.appendChild(el("div",{class:"empty"},"Belum ada bracket. Lock drawing minimal satu kategori terlebih dahulu."));
-    wrap.appendChild(sec);
-    return wrap;
-  }
-
-  sec.appendChild(el("button",{class:"btn btn-gold btn-block", style:"margin-bottom:14px;", onclick: async ()=>{
-    const n = await generateDraftSchedule();
-    showToast(n+" match babak pertama dijadwalkan otomatis.");
+  const applyBtn = el("button",{class:"btn btn-gold btn-block", style:"margin-bottom:14px;"+(totalMatches===0?"opacity:.55;":""), onclick: async ()=>{
+    if(totalMatches===0){ showToast("Belum ada bracket. Lock drawing minimal satu kategori dulu."); return; }
+    const n = await applyScheduleTemplate();
+    showToast(n>0 ? n+" match dipasang ke template jadwal." : "Tidak ada match baru untuk dipasang.");
     render();
-  }},"Generate Draft Jadwal (Babak Pertama)"));
+  }},"Terapkan Template ke Match yang Sudah Ada");
+  sec.appendChild(applyBtn);
 
   const dayTabs = el("div",{class:"tabs"});
   TOURNAMENT_DAYS.forEach(d=>{
-    dayTabs.appendChild(el("button",{class: scheduleActiveDay===d.day?"active":"", onclick:()=>{ scheduleActiveDay=d.day; render(); }}, d.label.split(",")[0]));
+    const cats = SCHEDULE_DAY_CATS[d.day];
+    dayTabs.appendChild(el("button",{class: scheduleActiveDay===d.day?"active":"", onclick:()=>{ scheduleActiveDay=d.day; render(); }},
+      d.label.split(",")[0]+" ("+catByCode(cats.L).name+" + "+catByCode(cats.H).name+")"));
   });
   sec.appendChild(dayTabs);
 
@@ -3214,19 +3391,34 @@ function viewAdminSchedule(){
   const table = el("table",{class:"sched-table"});
   const thead = el("tr",{});
   thead.appendChild(el("th",{},"Jam"));
-  COURTS.forEach(c=> thead.appendChild(el("th",{},"Lapangan "+c)));
+  COURTS.forEach(c=> thead.appendChild(el("th",{},"Lap "+c+(REF_DEFAULTS[c]?" \u00b7 "+REF_DEFAULTS[c]:""))));
   table.appendChild(thead);
   for(let idx=0; idx<SLOTS_PER_DAY; idx++){
     const tr = el("tr",{});
     tr.appendChild(el("td",{class:"sched-time"}, timeLabel(idx)));
     COURTS.forEach(court=>{
       const occ = scheduleOccupant(scheduleActiveDay, idx, court);
+      const plan = SCHEDULE_PLAN_BY_CELL[scheduleActiveDay+"-"+idx+"-"+court];
       let cell;
       if(occ){
         const m = matchById(occ.category, occ.matchId);
         const catShort = occ.category.slice(0,3);
-        cell = el("td",{},[el("div",{class:"sched-cell filled", onclick:()=>{ moveMatchTarget={category:occ.category, matchId:occ.matchId}; render(); }},
-          catShort+" "+(m? m.round+"#"+m.matchNo : ""))]);
+        const ref = effectiveReferee(m);
+        const kids = [ el("div",{}, catShort+" "+(m? m.round+"#"+m.matchNo : "")) ];
+        if(m) kids.push(el("div",{class:"sc-sub"}, matchSideLabel(occ.category,m.sideA)+" vs "+matchSideLabel(occ.category,m.sideB)));
+        if(ref) kids.push(el("div",{class:"sc-ref"}, "\ud83d\udc64 "+ref));
+        cell = el("td",{},[el("div",{class:"sched-cell filled", style:"height:auto;min-height:44px;", onclick:()=>{ moveMatchTarget={category:occ.category, matchId:occ.matchId}; render(); }}, kids)]);
+      } else if(plan){
+        const m = planMatchFor(plan);
+        let note = "menunggu drawing";
+        if(m){
+          if(scheduleFor(m.id)) note = "dipindah";
+          else if(matchIsEmptyShell(m)) note = "kosong";
+          else note = matchSideLabel(plan.category,m.sideA)+" vs "+matchSideLabel(plan.category,m.sideB);
+        }
+        const kids = [ el("div",{}, plan.category.slice(0,3)+" "+plan.round+"#"+plan.matchNo), el("div",{class:"sc-sub"}, note) ];
+        if(REF_DEFAULTS[court]) kids.push(el("div",{class:"sc-ref"}, "\ud83d\udc64 "+REF_DEFAULTS[court]));
+        cell = el("td",{},[el("div",{class:"sched-cell draft", style:"height:auto;min-height:44px;"}, kids)]);
       } else {
         cell = el("td",{},[el("div",{class:"sched-cell empty"},"-")]);
       }
@@ -3239,6 +3431,38 @@ function viewAdminSchedule(){
   wrap.appendChild(sec);
   if(moveMatchTarget) wrap.appendChild(renderMoveMatchModal());
   return wrap;
+}
+
+// Penugasan wasit default: 5 lapangan + 1 cadangan. Nama dipilih dari daftar wasit di Pengaturan.
+function renderRefereeDefaultsCard(){
+  const card = el("div",{class:"card", style:"margin-bottom:14px;"});
+  card.appendChild(el("div",{style:"font-weight:800;font-size:13.5px;margin-bottom:4px;"},"\ud83d\udc64 Penugasan Wasit (Default)"));
+  const names = META.settings.refereeNames||[];
+  if(names.length===0){
+    card.appendChild(el("div",{class:"flag warn"},"Daftar wasit masih kosong. Tambahkan nama wasit dulu di tab Pengaturan, lalu pilih di sini."));
+    return card;
+  }
+  card.appendChild(el("div",{style:"color:var(--ink-dim);font-size:11.5px;margin-bottom:10px;"},"Dipakai otomatis untuk semua match di lapangan tersebut. Bisa diganti manual per match (ketuk match di jadwal)."));
+  const grid = el("div",{style:"display:grid;grid-template-columns:1fr 1fr;gap:8px;"});
+  [...COURTS, "RESERVE"].forEach(key=>{
+    const f = el("div",{});
+    f.appendChild(el("div",{style:"font-size:10.5px;color:var(--ink-faint);font-weight:700;margin-bottom:3px;"}, key==="RESERVE" ? "Cadangan" : "Lapangan "+key));
+    const sel = el("select",{style:"width:100%;background:var(--bg-elev);border:1px solid var(--line);border-radius:8px;padding:8px;color:var(--ink);font-size:12.5px;"});
+    sel.appendChild(el("option",{value:""},"\u2014 belum diisi \u2014"));
+    names.forEach(n=> sel.appendChild(el("option",{value:n, selected: REF_DEFAULTS[key]===n?"selected":null}, n)));
+    if(REF_DEFAULTS[key] && !names.includes(REF_DEFAULTS[key])) sel.appendChild(el("option",{value:REF_DEFAULTS[key], selected:"selected"}, REF_DEFAULTS[key]+" (tidak di daftar)"));
+    sel.addEventListener("change", async (e)=>{
+      const prev = REF_DEFAULTS[key];
+      REF_DEFAULTS[key] = e.target.value;
+      const ok = await saveSchedule();
+      if(!ok){ REF_DEFAULTS[key] = prev; }
+      else showToast("Wasit "+(key==="RESERVE"?"cadangan":"Lap "+key)+": "+(e.target.value||"-"));
+      render();
+    });
+    f.appendChild(sel); grid.appendChild(f);
+  });
+  card.appendChild(grid);
+  return card;
 }
 
 async function generateDraftSchedule(){
@@ -3327,9 +3551,21 @@ function renderMoveMatchModal(){
   courtField.appendChild(el("label",{},"Court"));
   const courtSel = el("select",{});
   COURTS.forEach(c=> courtSel.appendChild(el("option",{value:c, selected:c===selCourt?"selected":null}, "Lapangan "+c)));
-  courtSel.addEventListener("change",(e)=>{ selCourt=Number(e.target.value); });
+  courtSel.addEventListener("change",(e)=>{ selCourt=e.target.value; });
   courtField.appendChild(courtSel);
   modal.appendChild(courtField);
+
+  let selRef = m.refereeName || "";
+  const refField = el("div",{class:"field"});
+  refField.appendChild(el("label",{},"Wasit"));
+  const refSel = el("select",{});
+  refSel.appendChild(el("option",{value:""}, "Default lapangan"+(REF_DEFAULTS[selCourt]? " ("+REF_DEFAULTS[selCourt]+")" : "")));
+  const refNames = META.settings.refereeNames||[];
+  refNames.forEach(n=> refSel.appendChild(el("option",{value:n, selected: n===selRef?"selected":null}, n)));
+  if(selRef && !refNames.includes(selRef)) refSel.appendChild(el("option",{value:selRef, selected:"selected"}, selRef+" (tidak di daftar)"));
+  refSel.addEventListener("change",(e)=>{ selRef=e.target.value; });
+  refField.appendChild(refSel);
+  modal.appendChild(refField);
 
   const errBox = el("div",{});
   modal.appendChild(errBox);
@@ -3372,6 +3608,7 @@ function renderMoveMatchModal(){
       SCHEDULE.push({id:uid(), matchId:m.id, category, day:selDay, timeIndex:selTime, court:selCourt});
     }
     if(!m.status) m.status = "SCHEDULED";
+    m.refereeName = selRef;
     await saveMatches();
     moveMatchTarget = null;
     await saveSchedule();
@@ -3479,7 +3716,7 @@ function viewAdminMatchControl(){
     const cat = catByCode(match.category);
     const card = el("div",{class:"mc-card"});
     const top = el("div",{class:"mc-top"});
-    top.appendChild(el("div",{class:"mc-meta"}, timeLabel(sched.timeIndex)+" \u00b7 Lap "+sched.court+" \u00b7 "+cat.name+" "+ROUND_LABELS[match.round]+" #"+match.matchNo+(match.refereeName?" \u00b7 Wasit: "+match.refereeName:"")));
+    top.appendChild(el("div",{class:"mc-meta"}, timeLabel(sched.timeIndex)+" \u00b7 Lap "+sched.court+" \u00b7 "+cat.name+" "+ROUND_LABELS[match.round]+" #"+match.matchNo+(effectiveReferee(match)?" \u00b7 Wasit: "+effectiveReferee(match):"")));
     top.appendChild(mcStatusBadge(match.status));
     card.appendChild(top);
 
@@ -3732,11 +3969,234 @@ function renderLoketReceiptModal(){
   return overlay;
 }
 
+let financeTab = "ringkasan"; // ringkasan | pemasukan | anggaran
+let budgetEdit = null;        // item yang sedang diedit / ditambah (modal anggaran)
+
+function financeSubTabs(){
+  const tabs = el("div",{class:"tabs", style:"margin-bottom:12px;"});
+  [["ringkasan","Ringkasan"],["pemasukan","Pemasukan Lain"],["anggaran","Anggaran"]].forEach(([key,label])=>{
+    tabs.appendChild(el("button",{class: financeTab===key?"active":"", onclick:()=>{ financeTab=key; render(); }},label));
+  });
+  return tabs;
+}
+function inputStyle(){ return "width:100%;background:var(--bg-elev);border:1px solid var(--line);border-radius:9px;padding:10px;color:var(--ink);"; }
+
+function renderFinanceIncomeOther(sec){
+  const total = INCOME_OTHER.reduce((s,x)=>s+(x.amount||0),0);
+  const grid = el("div",{class:"stat-grid"});
+  grid.appendChild(statCard("Total Pemasukan Lain (Diterima)", rupiah(total), true));
+  Object.keys(INCOME_KINDS).forEach(k=>{
+    grid.appendChild(statCard(INCOME_KINDS[k], rupiah(INCOME_OTHER.filter(x=>x.kind===k).reduce((s,x)=>s+(x.amount||0),0)), true));
+  });
+  sec.appendChild(grid);
+  const commitTotal = INCOME_OTHER.filter(x=>x.kind==="SPONSOR").reduce((s,x)=>s+(x.committed||0),0);
+  const recvSponsor = INCOME_OTHER.filter(x=>x.kind==="SPONSOR").reduce((s,x)=>s+(x.amount||0),0);
+  sec.appendChild(el("div",{class:"hint", style:"margin-top:6px;color:var(--ink-faint);font-size:11px;"},
+    "Sponsor: komitmen "+rupiah(commitTotal)+" \u00b7 sudah diterima "+rupiah(recvSponsor)+". Target bukan penerimaan \u2014 hanya yang diisi \"Diterima\" yang dihitung sebagai kas masuk."));
+
+  const card = el("div",{class:"card", style:"margin-top:14px;"});
+  card.appendChild(el("div",{style:"font-weight:800;font-size:13.5px;margin-bottom:8px;"},"+ Catat Pemasukan Lain"));
+  let kind = "SPONSOR", desc = "", committed = "", amount = "", note = "", link = "";
+  const kindSel = el("select",{style:inputStyle()+"margin-bottom:8px;"});
+  Object.keys(INCOME_KINDS).forEach(k=> kindSel.appendChild(el("option",{value:k}, INCOME_KINDS[k])));
+  kindSel.addEventListener("change",(e)=>{ kind=e.target.value; commitField.style.display = kind==="SPONSOR" ? "" : "none"; });
+  card.appendChild(kindSel);
+  const descIn = el("input",{type:"text", placeholder:"Keterangan (nama sponsor / sumber)", style:inputStyle()+"margin-bottom:8px;"});
+  descIn.addEventListener("input",(e)=>{ desc=e.target.value; });
+  card.appendChild(descIn);
+  const commitField = el("input",{type:"number", placeholder:"Komitmen (Rp) \u2014 khusus sponsor", style:inputStyle()+"margin-bottom:8px;"});
+  commitField.addEventListener("input",(e)=>{ committed=e.target.value; });
+  card.appendChild(commitField);
+  const amtIn = el("input",{type:"number", placeholder:"Diterima (Rp) \u2014 isi 0 jika baru komitmen", style:inputStyle()+"margin-bottom:8px;"});
+  amtIn.addEventListener("input",(e)=>{ amount=e.target.value; });
+  card.appendChild(amtIn);
+  const linkSel = el("select",{style:inputStyle()+"margin-bottom:8px;"});
+  linkSel.appendChild(el("option",{value:""},"Tautkan ke pos anggaran (opsional)"));
+  BUDGET_ITEMS.filter(b=>b.section==="INCOME" && !b.key && !b.targetOnly).forEach(b=> linkSel.appendChild(el("option",{value:b.id}, b.group+" \u2014 "+b.label)));
+  linkSel.addEventListener("change",(e)=>{ link=e.target.value; });
+  card.appendChild(linkSel);
+  const noteIn = el("input",{type:"text", placeholder:"Catatan (opsional)", style:inputStyle()+"margin-bottom:8px;"});
+  noteIn.addEventListener("input",(e)=>{ note=e.target.value; });
+  card.appendChild(noteIn);
+  card.appendChild(el("button",{class:"btn btn-gold btn-block", onclick: async ()=>{
+    const amt = Number(amount)||0, com = Number(committed)||0;
+    if(!desc.trim() || (amt<=0 && com<=0)){ showToast("Isi keterangan dan minimal salah satu nominal."); return; }
+    try{
+      const result = await apiMutate("ADD_INCOME_OTHER", { kind, description: desc.trim(), amount: amt, committed: kind==="SPONSOR"? com : 0, note: note.trim(), budgetItemId: link||undefined });
+      const r = result.data;
+      INCOME_OTHER.unshift({ id:r.id, kind:r.kind, description:r.description, committed:r.committed||0, amount:r.amount||0, note:r.note||"", budgetItemId:r.budget_item_id||null, createdAt:r.created_at });
+      showToast("Pemasukan dicatat."); render();
+    }catch(e){ console.error(e); showToast("Gagal menyimpan pemasukan."); }
+  }},"+ Catat Pemasukan"));
+  sec.appendChild(card);
+
+  if(INCOME_OTHER.length===0){
+    sec.appendChild(el("div",{class:"empty"},"Belum ada pemasukan lain dicatat."));
+    return;
+  }
+  INCOME_OTHER.forEach(x=>{
+    const row = el("div",{class:"fin-row"});
+    row.appendChild(el("div",{},[
+      el("div",{class:"fr-name"}, x.description),
+      el("div",{class:"fr-sub"}, INCOME_KINDS[x.kind]+(x.kind==="SPONSOR"&&x.committed? " \u00b7 komitmen "+rupiah(x.committed):"")+(x.note?" \u00b7 "+x.note:"")+" \u00b7 "+fmtDate(x.createdAt))
+    ]));
+    const right = el("div",{style:"display:flex;align-items:center;gap:10px;"});
+    right.appendChild(el("div",{class:"fr-balance"}, rupiah(x.amount)));
+    right.appendChild(el("button",{class:"btn btn-outline btn-xs", onclick:()=>openConfirm({
+      title:"Hapus Pemasukan?", body:"\""+x.description+"\" ("+rupiah(x.amount)+") akan dihapus dari catatan.", confirmLabel:"Hapus", danger:true,
+      onConfirm: async ()=>{
+        try{ await apiMutate("REMOVE_INCOME_OTHER",{id:x.id}); INCOME_OTHER = INCOME_OTHER.filter(i=>i.id!==x.id); showToast("Pemasukan dihapus."); render(); }
+        catch(e){ console.error(e); showToast("Gagal menghapus."); }
+      }
+    })},"Hapus"));
+    row.appendChild(right);
+    sec.appendChild(row);
+  });
+}
+
+function budgetRow(item){
+  const planned = budgetPlanned(item), real = budgetRealized(item);
+  const row = el("div",{class:"fin-row", style:"cursor:pointer;", onclick:()=>{ budgetEdit = Object.assign({}, item); render(); }});
+  row.appendChild(el("div",{},[
+    el("div",{class:"fr-name"}, item.label),
+    el("div",{class:"fr-sub"}, (item.qty||0).toLocaleString("id-ID")+" \u00d7 "+rupiah(item.unitPrice)+(item.note?" \u00b7 "+item.note:""))
+  ]));
+  const diff = item.section==="INCOME" ? real-planned : planned-real; // selisih: + = menguntungkan
+  row.appendChild(el("div",{style:"text-align:right;"},[
+    el("div",{class:"fr-balance"}, rupiah(planned)),
+    el("div",{style:"font-size:10.5px;color:var(--ink-dim);"}, "Realisasi "+rupiah(real)),
+    el("div",{style:"font-size:10px;font-weight:700;color:"+(diff<0?"var(--danger)":"var(--ok)")+";"}, (diff>=0?"+":"\u2212")+rupiah(Math.abs(diff)))
+  ]));
+  return row;
+}
+
+function renderFinanceBudget(sec){
+  if(financeExtraError){
+    sec.appendChild(el("div",{class:"flag"},"Data anggaran belum bisa dimuat. Coba muat ulang halaman."));
+    return;
+  }
+  const inc = BUDGET_ITEMS.filter(b=>b.section==="INCOME" && !b.targetOnly);
+  const tgt = BUDGET_ITEMS.filter(b=>b.section==="INCOME" && b.targetOnly);
+  const exp = BUDGET_ITEMS.filter(b=>b.section==="EXPENSE");
+  const sum = (arr,f)=>arr.reduce((s,b)=>s+f(b),0);
+  const incPlan = sum(inc,budgetPlanned);
+  const expPlan = sum(exp,budgetPlanned);
+  const regPaid = INDEX.filter(r=>r.status==="REGISTERED").reduce((s,r)=>s+(r.paymentAmountPaid||0),0);
+  const depKok = INDEX.filter(r=>r.status==="REGISTERED").reduce((s,r)=>s+(r.depositInitial||0),0);
+  const otherRecv = INCOME_OTHER.reduce((s,x)=>s+(x.amount||0),0);
+  const incReal = regPaid + depKok + otherRecv;
+  const expReal = EXPENSES.reduce((s,e)=>s+(e.amount||0),0);
+  const sponsorTarget = sum(tgt,budgetPlanned);
+  const sponsorCommit = INCOME_OTHER.filter(x=>x.kind==="SPONSOR").reduce((s,x)=>s+(x.committed||0),0);
+
+  const g = el("div",{class:"stat-grid"});
+  g.appendChild(statCard("Pemasukan (Anggaran)", rupiah(incPlan), true));
+  g.appendChild(statCard("Pemasukan (Realisasi)", rupiah(incReal), true));
+  g.appendChild(statCard("Pengeluaran (Anggaran)", rupiah(expPlan), true));
+  g.appendChild(statCard("Pengeluaran (Realisasi)", rupiah(expReal), true));
+  g.appendChild(statCard("Surplus Anggaran", rupiah(incPlan-expPlan), true));
+  g.appendChild(statCard("Surplus Realisasi", rupiah(incReal-expReal), true));
+  g.appendChild(statCard("Target Sponsor", rupiah(sponsorTarget), true));
+  g.appendChild(statCard("Proyeksi Surplus + Komitmen", rupiah(incPlan-expPlan+sponsorCommit), true));
+  sec.appendChild(g);
+  const linkedExp = sum(exp,budgetRealized);
+  if(expReal!==linkedExp){
+    sec.appendChild(el("div",{class:"hint", style:"margin-top:6px;color:var(--warn);font-size:11px;"},
+      "Pengeluaran belum ditautkan ke pos anggaran: "+rupiah(expReal-linkedExp)+". Pilih \"Pos anggaran\" saat mencatat pengeluaran di tab Ringkasan."));
+  }
+  sec.appendChild(el("div",{class:"hint", style:"margin-top:6px;color:var(--ink-faint);font-size:11px;"},
+    "Realisasi pemasukan: registrasi dari pembayaran yang sudah diterima (setelah diskon), kok dari deposit yang terkumpul, sisanya dari catatan Pemasukan Lain. Ketuk baris untuk mengubah angka anggaran."));
+
+  const block = (title, section, items)=>{
+    sec.appendChild(el("div",{class:"section-title", style:"margin-top:22px;"}, title));
+    const groups = [];
+    items.slice().sort((a,b)=>a.sort-b.sort).forEach(b=>{ if(!groups.includes(b.group)) groups.push(b.group); });
+    groups.forEach(gr=>{
+      sec.appendChild(el("div",{style:"font-size:11px;font-weight:800;letter-spacing:.05em;color:var(--ink-faint);text-transform:uppercase;margin:12px 0 4px;"}, gr));
+      items.filter(b=>b.group===gr).sort((a,b)=>a.sort-b.sort).forEach(b=> sec.appendChild(budgetRow(b)));
+    });
+    sec.appendChild(el("button",{class:"btn btn-outline btn-sm", style:"margin-top:10px;", onclick:()=>{
+      budgetEdit = { id:null, section, group: items.length? items[items.length-1].group : "Lainnya", label:"", qty:1, unitPrice:0, key:null, note:"", sort:999 };
+      render();
+    }},"+ Tambah pos"));
+  };
+  block("Anggaran Pemasukan","INCOME",inc);
+  block("Anggaran Pengeluaran","EXPENSE",exp);
+
+  if(tgt.length){
+    sec.appendChild(el("div",{class:"section-title", style:"margin-top:22px;"},"Target Sponsor"));
+    tgt.forEach(b=> sec.appendChild(budgetRow(b)));
+    sec.appendChild(el("div",{class:"hint", style:"margin-top:6px;color:var(--ink-faint);font-size:11px;"},"Target tidak dihitung sebagai pemasukan operasional. Catat komitmen & penerimaan sponsor di tab Pemasukan Lain."));
+  }
+}
+
+function renderBudgetEditModal(){
+  const it = budgetEdit;
+  const isNew = !it.id;
+  const overlay = el("div",{class:"modal-overlay", onclick:(e)=>{ if(e.target===overlay){ budgetEdit=null; render(); } }});
+  const modal = el("div",{class:"modal"});
+  modal.appendChild(el("h3",{}, isNew ? "Tambah Pos Anggaran" : "Ubah Pos Anggaran"));
+  const mk = (label, node)=>{ const f = el("div",{class:"field"}); f.appendChild(el("label",{},label)); f.appendChild(node); modal.appendChild(f); };
+  const labelIn = el("input",{type:"text", value:it.label, style:inputStyle()}); labelIn.disabled = !!it.key;
+  labelIn.addEventListener("input",(e)=>{ it.label=e.target.value; });
+  const groupIn = el("input",{type:"text", value:it.group, style:inputStyle()}); groupIn.disabled = !!it.key;
+  groupIn.addEventListener("input",(e)=>{ it.group=e.target.value; });
+  const qtyIn = el("input",{type:"number", value:String(it.qty), style:inputStyle()});
+  qtyIn.addEventListener("input",(e)=>{ it.qty=Number(e.target.value); });
+  const priceIn = el("input",{type:"number", value:String(it.unitPrice), style:inputStyle()});
+  priceIn.addEventListener("input",(e)=>{ it.unitPrice=Number(e.target.value); });
+  const noteIn = el("input",{type:"text", value:it.note||"", style:inputStyle()});
+  noteIn.addEventListener("input",(e)=>{ it.note=e.target.value; });
+  mk("Uraian", labelIn); mk("Kelompok", groupIn); mk("Qty", qtyIn); mk("Harga satuan (Rp)", priceIn); mk("Catatan", noteIn);
+  if(it.key) modal.appendChild(el("div",{style:"font-size:11px;color:var(--ink-faint);margin-bottom:8px;"},"Pos ini realisasinya dihitung otomatis dari data pendaftaran/deposit; hanya angka anggaran yang bisa diubah."));
+  const actions = el("div",{class:"modal-actions"});
+  actions.appendChild(el("button",{class:"btn btn-outline", onclick:()=>{ budgetEdit=null; render(); }},"Batal"));
+  if(!isNew && !it.key){
+    actions.appendChild(el("button",{class:"btn btn-danger", onclick:()=>openConfirm({
+      title:"Hapus Pos Anggaran?", body:"\""+it.label+"\" dihapus dari draft anggaran. Pengeluaran/pemasukan yang tertaut tidak ikut terhapus.", confirmLabel:"Hapus", danger:true,
+      onConfirm: async ()=>{
+        try{ await apiMutate("REMOVE_BUDGET_ITEM",{id:it.id}); BUDGET_ITEMS = BUDGET_ITEMS.filter(b=>b.id!==it.id); budgetEdit=null; showToast("Pos dihapus."); render(); }
+        catch(e){ console.error(e); showToast("Gagal menghapus pos."); }
+      }
+    })},"Hapus"));
+  }
+  actions.appendChild(el("button",{class:"btn btn-gold", onclick: async ()=>{
+    if(!it.label.trim() || !it.group.trim()){ showToast("Uraian dan kelompok wajib diisi."); return; }
+    if(!(it.qty>=0) || !(it.unitPrice>=0)){ showToast("Qty dan harga harus angka 0 atau lebih."); return; }
+    try{
+      const result = await apiMutate("SAVE_BUDGET_ITEM", { id: it.id||undefined, section: it.section, groupName: it.group.trim(), label: it.label.trim(), qty: it.qty, unitPrice: it.unitPrice, note: it.note||"", sort: it.sort });
+      const r = result.data;
+      const saved = { id:r.id, section:r.section, group:r.group_name, label:r.label, qty:Number(r.qty)||0, unitPrice:r.unit_price||0, key:r.budget_key||null, targetOnly:!!r.is_target_only, sort:r.sort||0, note:r.note||"" };
+      const idx = BUDGET_ITEMS.findIndex(b=>b.id===saved.id);
+      if(idx>=0) BUDGET_ITEMS[idx] = saved; else BUDGET_ITEMS.push(saved);
+      budgetEdit=null; showToast("Anggaran tersimpan."); render();
+    }catch(e){ console.error(e); showToast("Gagal menyimpan anggaran."); }
+  }},"Simpan"));
+  modal.appendChild(actions);
+  overlay.appendChild(modal);
+  return overlay;
+}
+
 function viewAdminFinance(){
   const wrap = el("div",{});
   wrap.appendChild(topbar("admin"));
   const sec = el("div",{class:"section"});
   sec.appendChild(adminTabs("admin-finance"));
+  sec.appendChild(financeSubTabs());
+  if(financeTab==="pemasukan"){
+    sec.appendChild(el("div",{class:"section-title"},"Pemasukan di Luar Pendaftaran"));
+    if(financeExtraError) sec.appendChild(el("div",{class:"flag"},"Data pemasukan lain belum bisa dimuat. Coba muat ulang halaman."));
+    else renderFinanceIncomeOther(sec);
+    wrap.appendChild(sec);
+    return wrap;
+  }
+  if(financeTab==="anggaran"){
+    sec.appendChild(el("div",{class:"section-title"},"Draft Anggaran: Budget & Realisasi"));
+    renderFinanceBudget(sec);
+    wrap.appendChild(sec);
+    if(budgetEdit) wrap.appendChild(renderBudgetEditModal());
+    return wrap;
+  }
   sec.appendChild(el("div",{class:"section-title"},"Rekap Pemasukan Registrasi"));
 
   const registeredList = INDEX.filter(r=>r.status==="REGISTERED");
@@ -3748,7 +4208,22 @@ function viewAdminFinance(){
   grid.appendChild(statCard("\ud83c\udfe6 Pemasukan Transfer", rupiah(transferIncome), true));
   grid.appendChild(statCard("Total Pemasukan Registrasi", rupiah(totalPayment), true));
   grid.appendChild(statCard("Jumlah Peserta Resmi", registeredList.length));
+  const discounted = INDEX.filter(r=>(r.discountAmount||0)>0);
+  grid.appendChild(statCard("Total Diskon Diberikan", rupiah(discounted.reduce((s,r)=>s+r.discountAmount,0)), true));
+  grid.appendChild(statCard("Pemasukan Lain (Diterima)", rupiah(INCOME_OTHER.reduce((s,x)=>s+(x.amount||0),0)), true));
   sec.appendChild(grid);
+  if(discounted.length){
+    sec.appendChild(el("div",{style:"font-size:11px;font-weight:800;letter-spacing:.05em;color:var(--ink-faint);text-transform:uppercase;margin:12px 0 4px;"},"Pendaftar Berdiskon"));
+    discounted.forEach(r=>{
+      const row = el("div",{class:"fin-row", style:"cursor:pointer;", onclick:()=>nav("admin-detail",{id:r.id})});
+      row.appendChild(el("div",{},[
+        el("div",{class:"fr-name"}, r.player1+" / "+r.player2),
+        el("div",{class:"fr-sub"}, (r.regNo||"Belum ada kode")+" \u00b7 "+(catByCode(r.category)||{name:r.category}).name+" \u00b7 "+(r.discountNote||"-"))
+      ]));
+      row.appendChild(el("div",{class:"fr-balance"}, "\u2212"+rupiah(r.discountAmount)));
+      sec.appendChild(row);
+    });
+  }
 
   sec.appendChild(el("div",{class:"section-title", style:"margin-top:22px;"},"Rekap Deposit Kok"));
   const depositCollected = registeredList.reduce((s,r)=>s+(r.depositInitial||0),0);
@@ -3797,10 +4272,20 @@ function viewAdminFinance(){
   sourceField.appendChild(seg);
   expCard.appendChild(sourceField);
 
+  let expBudget = "";
+  const budgetField = el("div",{class:"field"});
+  budgetField.appendChild(el("label",{},"Pos Anggaran (opsional)"));
+  const budgetSel = el("select",{style:inputStyle()});
+  budgetSel.appendChild(el("option",{value:""},"\u2014 tidak ditautkan \u2014"));
+  BUDGET_ITEMS.filter(b=>b.section==="EXPENSE").sort((a,b)=>a.sort-b.sort).forEach(b=> budgetSel.appendChild(el("option",{value:b.id}, b.group+" \u2014 "+b.label)));
+  budgetSel.addEventListener("change",(e)=>{ expBudget = e.target.value; });
+  budgetField.appendChild(budgetSel);
+  if(BUDGET_ITEMS.length) expCard.appendChild(budgetField);
+
   expCard.appendChild(el("button",{class:"btn btn-gold btn-block", onclick: async ()=>{
     const amt = Number(expAmount);
     if(!expDesc.trim() || !amt || amt<=0){ showToast("Isi keterangan dan nominal yang valid."); return; }
-    const ok = await addExpense(expDesc.trim(), amt, expSource);
+    const ok = await addExpense(expDesc.trim(), amt, expSource, expBudget);
     if(ok){ showToast("Pengeluaran dicatat."); render(); }
   }},"+ Catat Pengeluaran"));
   sec.appendChild(expCard);
@@ -3812,7 +4297,7 @@ function viewAdminFinance(){
       const row = el("div",{class:"fin-row"});
       row.appendChild(el("div",{},[
         el("div",{class:"fr-name"}, e.description),
-        el("div",{class:"fr-sub"}, (e.source==="BANK"?"\ud83c\udfe6 Rekening":"\ud83d\udcb5 Kas Tunai")+" \u00b7 "+fmtDate(e.createdAt))
+        el("div",{class:"fr-sub"}, (e.source==="BANK"?"\ud83c\udfe6 Rekening":"\ud83d\udcb5 Kas Tunai")+" \u00b7 "+fmtDate(e.createdAt)+(e.budgetItemId && BUDGET_ITEMS.find(b=>b.id===e.budgetItemId) ? " \u00b7 Pos: "+BUDGET_ITEMS.find(b=>b.id===e.budgetItemId).label : ""))
       ]));
       const right = el("div",{style:"display:flex;align-items:center;gap:10px;"});
       right.appendChild(el("div",{class:"fr-balance"}, rupiah(e.amount)));
@@ -3914,7 +4399,8 @@ function viewAdminReferee(){
     const refField = el("div",{style:"display:flex;align-items:center;gap:8px;"});
     refField.appendChild(el("span",{style:"font-size:11px;color:var(--ink-faint);white-space:nowrap;"},"\ud83d\udc64 Wasit:"));
     const refSelect = el("select",{style:"flex:1;background:var(--bg-elev);border:1px solid var(--line);border-radius:8px;padding:7px 10px;color:var(--ink);font-size:12.5px;"});
-    refSelect.appendChild(el("option",{value:""},"\u2014 pilih wasit \u2014"));
+    { const sd = scheduleFor(match.id); const dflt = sd ? REF_DEFAULTS[sd.court] : "";
+      refSelect.appendChild(el("option",{value:""}, dflt? "Default lapangan: "+dflt : "\u2014 pilih wasit \u2014")); }
     (META.settings.refereeNames||[]).forEach(name=>{
       refSelect.appendChild(el("option",{value:name, selected: match.refereeName===name?"selected":null}, name));
     });
@@ -4083,7 +4569,7 @@ function viewAdminRefereeScoring(params){
 
   const sec = el("div",{class:"section"});
   sec.appendChild(el("div",{style:"text-align:center;color:var(--ink-faint);font-size:11.5px;margin-bottom:2px;"}, cat.name+" \u00b7 "+ROUND_LABELS[m.round]+" #"+m.matchNo));
-  if(m.refereeName) sec.appendChild(el("div",{style:"text-align:center;color:var(--gold-bright);font-size:11.5px;font-weight:700;margin-bottom:10px;"},"\ud83d\udc64 Wasit: "+m.refereeName));
+  if(effectiveReferee(m)) sec.appendChild(el("div",{style:"text-align:center;color:var(--gold-bright);font-size:11.5px;font-weight:700;margin-bottom:10px;"},"\ud83d\udc64 Wasit: "+effectiveReferee(m)));
 
   const court = ls.servingSide==="A" ? (ls.scoreA%2===0?"Kanan":"Kiri") : (ls.scoreB%2===0?"Kanan":"Kiri");
   const serverName = ls.servingSide==="A" ? ls.sideAPlayers[ls.serverToggleA] : ls.sideBPlayers[ls.serverToggleB];
@@ -4312,7 +4798,7 @@ async function resetAllTournamentData(){
     await apiMutate("RESET_ALL", { confirm: "HAPUS SEMUA" });
     INDEX = [];
     REG_CACHE = {};
-    await loadMeta(); await loadPhase2(); await loadExpenses();
+    await loadMeta(); await loadPhase2(); await loadExpenses(); await loadFinanceExtra();
     showToast("Semua data pendaftar, bracket, jadwal, dan pengeluaran sudah direset.");
     nav("admin-dashboard");
   }catch(e){ console.error(e); showToast("Gagal mereset data. Coba lagi."); }
@@ -4352,7 +4838,7 @@ async function confirmImportBackup(){
       expenses: backup.expenses,
     });
 
-    await loadMeta(); await loadIndex(); await loadPhase2(); await loadExpenses();
+    await loadMeta(); await loadIndex(); await loadPhase2(); await loadExpenses(); await loadFinanceExtra();
     REG_CACHE = {};
 
     pendingImportBackup = null;

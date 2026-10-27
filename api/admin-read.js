@@ -8,7 +8,7 @@ const { isSuper, scopeAllowsCategory, sendJson, requireSession } = require("./_l
 const INDEX_COLUMNS =
   "id, reg_no, category, status, player1, player2, club, whatsapp, " +
   "payment_status, payment_amount_due, payment_amount_paid, deposit_initial, " +
-  "deposit_balance, is_demo, created_at, updated_at";
+  "deposit_balance, discount_amount, discount_note, is_demo, created_at, updated_at";
 
 module.exports = async function handler(req, res) {
   if (req.method !== "GET") {
@@ -56,6 +56,18 @@ module.exports = async function handler(req, res) {
         .from("expenses")
         .select("*")
         .order("created_at", { ascending: false });
+      if (error) throw error;
+      return sendJson(res, 200, { ok: true, data });
+    }
+
+    if (resource === "income_other" || resource === "budget_items") {
+      if (!isSuper(session)) {
+        return sendJson(res, 403, { ok: false, error: "forbidden_scope" });
+      }
+      const q = supabase.from(resource).select("*");
+      const { data, error } = resource === "budget_items"
+        ? await q.order("section").order("sort")
+        : await q.order("created_at", { ascending: false });
       if (error) throw error;
       return sendJson(res, 200, { ok: true, data });
     }
