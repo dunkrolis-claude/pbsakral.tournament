@@ -266,6 +266,8 @@
   .sched-cell.empty{color:var(--ink-faint);}
   .sched-cell.filled{background:rgba(212,175,55,0.10);color:var(--gold-bright);}
   .sched-cell.draft{background:transparent;color:var(--ink-dim);border:1px dashed var(--line);cursor:default;}
+  .sched-legend{display:flex;flex-wrap:wrap;gap:8px 14px;margin:0 0 10px;font-size:11.5px;color:var(--ink-dim);}
+  .sched-legend i{display:inline-block;width:11px;height:11px;border-radius:3px;margin-right:5px;vertical-align:-1px;}
   .sched-cell .sc-sub{font-weight:600;font-size:9px;color:var(--ink-faint);margin-top:1px;white-space:normal;}
   .sched-cell .sc-ref{font-weight:600;font-size:9px;color:var(--gold-dim);margin-top:1px;}
   .sched-cell:hover{background:rgba(212,175,55,0.18);}
@@ -607,6 +609,12 @@ const SCHEDULE_PLAN = (function(){
   });
   return plan;
 })();
+// Warna jadwal per level (beda jelas satu sama lain supaya grid mudah dibaca)
+const SCHEDULE_CAT_COLORS = { PRIME:"#d4af37", CORE:"#3fae5c", RISING:"#3b8fd4", QUEENS:"#d43b83" };
+function schedCatStyle(catCode){
+  const c = SCHEDULE_CAT_COLORS[catCode] || "#888";
+  return "background:"+c+"26;border-left:4px solid "+c+";color:var(--ink);";
+}
 const SCHEDULE_PLAN_BY_CELL = {};
 SCHEDULE_PLAN.forEach(p=>{ SCHEDULE_PLAN_BY_CELL[p.day+"-"+p.timeIndex+"-"+p.court] = p; });
 const ROUND_LABELS = {R64:"Babak 64 Besar", R32:"32 Besar", R16:"16 Besar", QF:"Perempat Final", SF:"Semifinal", F:"Final"};
@@ -887,9 +895,8 @@ function usedSlotParticipants(catCode, excludeIndex){
   slots.forEach((pid,idx)=>{ if(pid && idx!==excludeIndex) used.add(pid); });
   return used;
 }
-function generateBracketForCategory(catCode){
+function buildBracketList(catCode, slots){
   const cat = catByCode(catCode);
-  const slots = DRAWING[catCode].slots;
   const roundNames = roundNamesFor(cat.quota);
   const flat = [];
   let prevRound = [];
@@ -913,14 +920,34 @@ function generateBracketForCategory(catCode){
     }
     prevRound = curRound;
   }
-  MATCHES[catCode] = flat;
+  return flat;
+}
+function generateBracketForCategory(catCode){
+  MATCHES[catCode] = buildBracketList(catCode, DRAWING[catCode].slots);
+}
+/* Draft bracket: kerangka bagan yang sudah tampil sebelum drawing di-lock. Begitu match asli ada
+   (setelah Lock Drawing), bagan otomatis memakai match asli. Admin melihat nama pemain yang sudah
+   ditempatkan di drawing; publik hanya melihat kerangka (nama baru muncul setelah lock). */
+const DRAFT_BRACKET_CACHE = {};
+function bracketMatchesFor(catCode){
+  const real = MATCHES[catCode] || [];
+  if(real.length>0) return real;
+  const cat = catByCode(catCode);
+  const slots = adminSession && DRAWING[catCode] ? DRAWING[catCode].slots : new Array(cat.quota).fill(null);
+  const key = (adminSession?"A":"P")+"|"+cat.quota+"|"+slots.join(",");
+  const c = DRAFT_BRACKET_CACHE[catCode];
+  if(c && c.key===key) return c.list;
+  const list = buildBracketList(catCode, slots);
+  DRAFT_BRACKET_CACHE[catCode] = { key, list };
+  return list;
 }
 function matchById(catCode, id){ return (MATCHES[catCode]||[]).find(m=>m.id===id); }
 function matchSideLabel(catCode, side){
+  const isDraft = (MATCHES[catCode]||[]).length===0;
   if(side.type==="participant"){
-    return side.participantId ? participantLabel(side.participantId) : "\u2014 (kosong)";
+    return side.participantId ? participantLabel(side.participantId) : (isDraft ? "Menunggu drawing" : "\u2014 (kosong)");
   }
-  const ref = matchById(catCode, side.matchId);
+  const ref = matchById(catCode, side.matchId) || (isDraft ? bracketMatchesFor(catCode).find(x=>x.id===side.matchId) : null);
   if(!ref) return "TBD";
   return "Pemenang " + ROUND_LABELS[ref.round] + " #" + ref.matchNo;
 }
@@ -2128,8 +2155,7 @@ function renderPublicBagan(){
   const cat = catByCode(publicLiveCat);
   const matches = MATCHES[cat.code] || [];
   if(matches.length===0){
-    sec.appendChild(el("div",{class:"empty"},"Bagan belum tersedia untuk kategori ini."));
-    return sec;
+    sec.appendChild(el("div",{style:"color:var(--ink-dim);font-size:12px;margin-bottom:10px;"},"Draft bagan. Nama pasangan muncul setelah drawing selesai."));
   }
   sec.appendChild(renderBracketTree(cat.code));
   return sec;
@@ -3193,7 +3219,7 @@ let pendingBracketDraw = null;
 
 function renderBracketTree(catCode){
   const cat = catByCode(catCode);
-  const matches = MATCHES[catCode] || [];
+  const matches = bracketMatchesFor(catCode);
   const roundNames = roundNamesFor(cat.quota);
   const scrollWrap = el("div",{class:"bracket-scroll"});
   const treeId = "bracket-tree-"+catCode;
@@ -3242,7 +3268,7 @@ function drawBracketSvgLines(catCode, treeId, svgId){
   svg.setAttribute("width", treeEl.scrollWidth);
   svg.setAttribute("height", treeEl.scrollHeight);
   while(svg.firstChild) svg.removeChild(svg.firstChild);
-  const matches = MATCHES[catCode] || [];
+  const matches = bracketMatchesFor(catCode);
   matches.forEach(m=>{
     let s1 = m.sideA.type==="winnerOf" ? m.sideA.matchId : m.sideA.resolvedFrom;
     let s2 = m.sideB.type==="winnerOf" ? m.sideB.matchId : m.sideB.resolvedFrom;
@@ -3281,7 +3307,9 @@ function viewAdminBracket(){
   const cat = catByCode(bracketActiveCat);
   const matches = MATCHES[cat.code] || [];
   if(matches.length===0){
-    sec.appendChild(el("div",{class:"empty"},"Bracket belum dibuat. Selesaikan Drawing lalu tekan Lock Drawing untuk kategori ini."));
+    const placed = (DRAWING[cat.code]&&DRAWING[cat.code].slots||[]).filter(Boolean).length;
+    sec.appendChild(el("div",{class:"flag info"},"Draft bagan "+cat.name+" ("+cat.quota+" slot). "+(placed? placed+" pasangan sudah ditempatkan di Drawing \u2014 " : "")+"Nama terisi otomatis mengikuti Drawing; bagan resmi, daftar match, dan jadwal aktif setelah Lock Drawing."));
+    sec.appendChild(renderBracketTree(cat.code));
     wrap.appendChild(sec);
     return wrap;
   }
@@ -3379,6 +3407,10 @@ function viewAdminSchedule(){
   }},"Terapkan Template ke Match yang Sudah Ada");
   sec.appendChild(applyBtn);
 
+  const legend = el("div",{class:"sched-legend"});
+  META.categories.forEach(c=> legend.appendChild(el("span",{},[el("i",{style:"background:"+(SCHEDULE_CAT_COLORS[c.code]||"#888")+";"}), c.name+" ("+c.level+")"])));
+  sec.appendChild(legend);
+
   const dayTabs = el("div",{class:"tabs"});
   TOURNAMENT_DAYS.forEach(d=>{
     const cats = SCHEDULE_DAY_CATS[d.day];
@@ -3407,7 +3439,7 @@ function viewAdminSchedule(){
         const kids = [ el("div",{}, catShort+" "+(m? m.round+"#"+m.matchNo : "")) ];
         if(m) kids.push(el("div",{class:"sc-sub"}, matchSideLabel(occ.category,m.sideA)+" vs "+matchSideLabel(occ.category,m.sideB)));
         if(ref) kids.push(el("div",{class:"sc-ref"}, "\ud83d\udc64 "+ref));
-        cell = el("td",{},[el("div",{class:"sched-cell filled", style:"height:auto;min-height:44px;", onclick:()=>{ moveMatchTarget={category:occ.category, matchId:occ.matchId}; render(); }}, kids)]);
+        cell = el("td",{},[el("div",{class:"sched-cell filled", style:"height:auto;min-height:44px;"+schedCatStyle(occ.category), onclick:()=>{ moveMatchTarget={category:occ.category, matchId:occ.matchId}; render(); }}, kids)]);
       } else if(plan){
         const m = planMatchFor(plan);
         let note = "menunggu drawing";
@@ -3418,7 +3450,7 @@ function viewAdminSchedule(){
         }
         const kids = [ el("div",{}, plan.category.slice(0,3)+" "+plan.round+"#"+plan.matchNo), el("div",{class:"sc-sub"}, note) ];
         if(REF_DEFAULTS[court]) kids.push(el("div",{class:"sc-ref"}, "\ud83d\udc64 "+REF_DEFAULTS[court]));
-        cell = el("td",{},[el("div",{class:"sched-cell draft", style:"height:auto;min-height:44px;"}, kids)]);
+        cell = el("td",{},[el("div",{class:"sched-cell draft", style:"height:auto;min-height:44px;"+schedCatStyle(plan.category)+"opacity:.78;", }, kids)]);
       } else {
         cell = el("td",{},[el("div",{class:"sched-cell empty"},"-")]);
       }
