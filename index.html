@@ -624,8 +624,8 @@ function timeLabel(idx){
   return String(h).padStart(2,"0")+":"+String(m).padStart(2,"0");
 }
 /* Template jadwal (dari sheet "Jadwal" RAB): satu baris = satu slot 30 menit, 5 lapangan A-E.
-   L = kategori pasangan "kecil" hari itu (Hari 1 Rising, Hari 2 Queens), H = kategori "besar"
-   (Hari 1 Prime, Hari 2 Core). "-" = kosong. Template hanya kerangka: nama peserta menyusul
+   L = kategori pasangan "kecil" hari itu (Sabtu Queens, Minggu Rising), H = kategori "besar"
+   (Sabtu Core, Minggu Prime). "-" = kosong. Template hanya kerangka: nama peserta menyusul
    setelah drawing, dan jadwal tetap bisa digeser manual per match. */
 const SCHEDULE_TEMPLATE_ROWS = [
   "LR32 LR32 LR32 LR32 LR32",
@@ -656,7 +656,7 @@ const SCHEDULE_TEMPLATE_ROWS = [
   "- - - - -",
   "HF - - - -"
 ];
-const SCHEDULE_DAY_CATS = { 1:{L:"RISING", H:"PRIME"}, 2:{L:"QUEENS", H:"CORE"} };
+const SCHEDULE_DAY_CATS = { 1:{L:"QUEENS", H:"CORE"}, 2:{L:"RISING", H:"PRIME"} };
 const SCHEDULE_PLAN = (function(){
   const plan = [], counters = {};
   [1,2].forEach(day=>{
