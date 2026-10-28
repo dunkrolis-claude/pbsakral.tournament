@@ -266,6 +266,21 @@
   .sched-cell.empty{color:var(--ink-faint);}
   .sched-cell.filled{background:rgba(212,175,55,0.10);color:var(--gold-bright);}
   .sched-cell.draft{background:transparent;color:var(--ink-dim);border:1px dashed var(--line);cursor:default;}
+  .offline-bar{font-size:11.5px;color:var(--ink-faint);padding:6px 14px;text-align:center;border-bottom:1px solid var(--line,#2a2a2a);}
+  .offline-bar.stale{background:#ffb020;color:#1a1200;font-size:12.5px;font-weight:600;text-align:left;border-bottom:0;}
+  .qr-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:12px;}
+  .qr-tile{background:#fff;color:#111;border-radius:12px;padding:10px;text-align:center;}
+  .qr-tile .qr-title{font-weight:800;font-size:13px;margin-bottom:6px;}
+  .qr-tile .qr-box{width:100%;aspect-ratio:1/1;}
+  .qr-tile .qr-box svg{width:100%;height:100%;display:block;}
+  .qr-tile .qr-url{font-size:9.5px;word-break:break-all;color:#444;margin-top:4px;}
+  .wa-row{display:flex;gap:10px;align-items:center;justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--line,#2a2a2a);font-size:12.5px;}
+  @media print{
+    body.printing-qr > *{display:none !important;}
+    body.printing-qr #qr-print-root{display:block !important;}
+    #qr-print-root .qr-grid{grid-template-columns:repeat(2,1fr);}
+    #qr-print-root .qr-tile{border:1px solid #000;break-inside:avoid;}
+  }
   .demo-strip{position:sticky;top:0;z-index:50;display:flex;flex-wrap:wrap;gap:8px;align-items:center;justify-content:space-between;background:#ffb020;color:#1a1200;padding:8px 14px;font-size:12.5px;}
   .demo-strip .btn{color:#1a1200;border-color:#1a1200;}
   .set-badge{text-align:center;font-family:'Anton';letter-spacing:.12em;font-size:15px;color:var(--ink);margin-bottom:8px;}
@@ -449,6 +464,12 @@ function dbRowToReg(row){
     discountAmount: row.discount_amount||0, discountNote: row.discount_note||"",
     createdAt: row.created_at, updatedAt: row.updated_at,
   };
+}
+function pubRowToSummary(r){
+  return { id:r.id, regNo:r.reg_no, category:r.category, status:r.status, player1:r.player1, player2:r.player2, club:r.club, whatsapp:"", createdAt:r.created_at, updatedAt:r.created_at, paymentAmountDue:0, paymentAmountPaid:0, paymentStatus:"", paymentMethod:"", depositInitial:0, depositBalance:0, isDemo:false };
+}
+function pubRowToReg(data){
+  return { id:data.id, regNo:data.reg_no, category:data.category, status:data.status, player1:data.player1, player2:data.player2, club:data.club, createdAt:data.created_at, payment:{amountPaid:0,amountDue:0,status:""}, deposit:null, depositTransactions:[], notifications:[] };
 }
 function regSummaryFromIndexRow(row){
   return {
@@ -666,6 +687,7 @@ let META = null;      // {settings, categories, counters}
 let INDEX = [];        // lightweight list of registration summaries
 let publicIndexError = false; // true only when the public loadIndex() read actually failed (distinct from a genuinely empty INDEX)
 let REG_CACHE = {};    // id -> full record (loaded lazily)
+let PUB_ROWS = [];     // baris mentah registrations_public (sumber data halaman pemain; juga dipakai offline)
 let ready = false;
 let route = {name:"home", params:{}};
 let adminSession = false;
@@ -700,32 +722,35 @@ function defaultMeta(){
   };
 }
 
+function applyMetaRow(data){
+  const d = defaultMeta();
+  if(data){
+    META = {
+      categories: data.categories && data.categories.length ? data.categories : d.categories,
+      counters: d.counters, // counters now live server-side in registration_counters; not exposed to client
+      settings: {
+        registrationOpen: data.registration_open ?? true,
+        whatsappEnabled: data.whatsapp_enabled ?? true,
+        scoringTarget: data.scoring_target ?? 42,
+        refereeNames: data.referee_names || [],
+        publicResultsVisible: data.public_results_visible ?? false,
+        // NOTE: adminPin / categoryPins no longer exist client-side.
+        // Credentials live only in admin_credentials (server/service_role only).
+      },
+    };
+  } else { META = defaultMeta(); }
+  META.categories.forEach(c=>{
+    if(c.prize===undefined){ const dc = d.categories.find(x=>x.code===c.code); c.prize = dc? dc.prize : 0; }
+    if(c.bankName===undefined) c.bankName="";
+    if(c.bankAccount===undefined) c.bankAccount="";
+    if(c.bankHolder===undefined) c.bankHolder="";
+  });
+}
 async function loadMeta(){
   try{
     const { data, error } = await sb.from("tournament_settings").select("*").eq("id",1).maybeSingle();
     if(error) throw error;
-    const d = defaultMeta();
-    if(data){
-      META = {
-        categories: data.categories && data.categories.length ? data.categories : d.categories,
-        counters: d.counters, // counters now live server-side in registration_counters; not exposed to client
-        settings: {
-          registrationOpen: data.registration_open ?? true,
-          whatsappEnabled: data.whatsapp_enabled ?? true,
-          scoringTarget: data.scoring_target ?? 42,
-          refereeNames: data.referee_names || [],
-          publicResultsVisible: data.public_results_visible ?? false,
-          // NOTE: adminPin / categoryPins no longer exist client-side.
-          // Credentials live only in admin_credentials (server/service_role only).
-        },
-      };
-    } else { META = defaultMeta(); }
-    META.categories.forEach(c=>{
-      if(c.prize===undefined){ const dc = d.categories.find(x=>x.code===c.code); c.prize = dc? dc.prize : 0; }
-      if(c.bankName===undefined) c.bankName="";
-      if(c.bankAccount===undefined) c.bankAccount="";
-      if(c.bankHolder===undefined) c.bankHolder="";
-    });
+    applyMetaRow(data);
   }catch(e){ console.error(e); META = defaultMeta(); }
 }
 async function saveMeta(){
@@ -751,7 +776,8 @@ async function loadIndex(){
       // Public pages only ever need the safe projection (no whatsapp/payment detail).
       const { data, error } = await sb.from("registrations_public").select("*");
       if(error) throw error;
-      INDEX = data.map(r=>({ id:r.id, regNo:r.reg_no, category:r.category, status:r.status, player1:r.player1, player2:r.player2, club:r.club, whatsapp:"", createdAt:r.created_at, updatedAt:r.created_at, paymentAmountDue:0, paymentAmountPaid:0, paymentStatus:"", paymentMethod:"", depositInitial:0, depositBalance:0, isDemo:false }));
+      PUB_ROWS = data;
+      INDEX = data.map(pubRowToSummary);
     }
     // A load that actually completed — even if it legitimately found zero
     // rows — is not a failure. Only the catch below means "we don't know
@@ -845,6 +871,23 @@ let MATCHES_VERSION = {};
 let SCHEDULE_VERSION = 1;
 
 function defaultDrawingFor(cat){ return { locked:false, slots: new Array(cat.quota).fill(null), auditLog:[] }; }
+function applyPhase2(drRows, maRows, schRow){
+  DRAWING = {}; DRAWING_VERSION = {};
+  META.categories.forEach(cat=>{
+    const row = (drRows||[]).find(r=>r.category_code===cat.code);
+    DRAWING[cat.code] = row ? row.data : defaultDrawingFor(cat);
+    DRAWING_VERSION[cat.code] = row ? row.version : 1;
+  });
+  MATCHES = {}; MATCHES_VERSION = {};
+  META.categories.forEach(cat=>{
+    const row = (maRows||[]).find(r=>r.category_code===cat.code);
+    MATCHES[cat.code] = row ? (row.data.list||[]) : [];
+    MATCHES_VERSION[cat.code] = row ? row.version : 1;
+  });
+  SCHEDULE = schRow ? (schRow.data.list||[]) : [];
+  REF_DEFAULTS = Object.assign({ A:"", B:"", C:"", D:"", E:"", RESERVE:"" }, (schRow && schRow.data.refDefaults) || {});
+  SCHEDULE_VERSION = schRow ? schRow.version : 1;
+}
 async function loadPhase2(){
   DRAWING = {}; DRAWING_VERSION = {};
   try{
@@ -1051,9 +1094,13 @@ async function loadRegFull(id){
       // Public/participant self-lookup only ever gets the safe projection —
       // sensitive fields (whatsapp, payment proof, notifications, deposit
       // history) are never sent to an unauthenticated browser.
-      const { data, error } = await sb.from("registrations_public").select("*").eq("id", id).maybeSingle();
-      if(error) throw error;
-      reg = data ? { id:data.id, regNo:data.reg_no, category:data.category, status:data.status, player1:data.player1, player2:data.player2, club:data.club, createdAt:data.created_at, payment:{amountPaid:0,amountDue:0,status:""}, deposit:null, depositTransactions:[], notifications:[] } : null;
+      let data = PUB_ROWS.find(r=>r.id===id) || null;
+      if(!data){
+        const rs = await sb.from("registrations_public").select("*").eq("id", id).maybeSingle();
+        if(rs.error) throw rs.error;
+        data = rs.data;
+      }
+      reg = data ? pubRowToReg(data) : null;
     }
     REG_CACHE[id] = reg;
     return reg;
@@ -1176,6 +1223,14 @@ function findSummaryByNo(no){ return INDEX.find(r=>r.regNo && r.regNo.toLowerCas
 
 /* ============ NOTIFICATIONS (WhatsApp — manual-send model) ============ */
 function buildMessage(type, reg, extra){
+  const base = buildMessageBase(type, reg, extra);
+  if(type==="MATCH_SCHEDULE_INFO"){
+    const cat = catByCode(reg.category);
+    return base + `\n\nBagan ${cat?cat.name:""}: ${deepLink("bagan", reg.category)}\nJadwalku: ${deepLink("jadwalku")}\n\nBuka link ini SEKALI selagi ada sinyal supaya jadwal tersimpan di HP dan tetap bisa dibuka saat sinyal jelek di lokasi.`;
+  }
+  return base;
+}
+function buildMessageBase(type, reg, extra){
   extra = extra || {};
   const pairName = reg.player1 + " / " + reg.player2;
   const cat = catByCode(reg.category);
@@ -1238,7 +1293,11 @@ function openWaLink(reg, notif){
 }
 
 /* ============ RENDER ROOT ============ */
-function nav(name, params={}){ route = {name, params}; window.scrollTo(0,0); render(); }
+function nav(name, params={}){
+  route = {name, params}; window.scrollTo(0,0);
+  if(name!=="public-live" && PLAYER_HASH_RE.test(location.hash||"")){ try{ history.replaceState(null,"",location.pathname+location.search); }catch(e){} }
+  render();
+}
 function showToast(msg, ms=2600){
   clearTimeout(toastTimer);
   let e = document.getElementById("toast");
@@ -1686,7 +1745,9 @@ function viewStatus(params){
   }
   const wrap = el("div",{});
   wrap.appendChild(topbar("status"));
+  wrap.appendChild(freshnessBar());
   wrap.appendChild(backRow(()=>nav("home")));
+  rememberMyReg();
   const sec = el("div",{class:"section"});
   sec.appendChild(el("h2",{style:"font-size:22px;margin:0 0 4px;"},"Cek Jadwal & Status"));
   sec.appendChild(el("div",{style:"color:var(--ink-dim);font-size:13px;margin-bottom:16px;"},"Masukkan kode booking (dikirim panitia via WhatsApp) atau nama PB/klub kamu untuk lihat jadwal main, hasil, dan status."));
@@ -2054,11 +2115,14 @@ function adminPaymentEntryCard(reg){
 let publicLiveTab = "jadwal";
 let publicLiveDay = 1;
 let publicLiveCat = null;
+let publicJadwalCat = "ALL";
 
 function viewPublicLive(){
   if(!publicLiveCat) publicLiveCat = META.categories[0].code;
+  syncPlayerHash();
   const wrap = el("div",{});
   wrap.appendChild(topbar("live"));
+  wrap.appendChild(freshnessBar());
   const sec = el("div",{class:"section"});
   sec.appendChild(el("h2",{style:"font-size:20px;margin:0 0 4px;"},"Jadwal, Bagan & Hasil"));
   sec.appendChild(el("div",{style:"color:var(--ink-dim);font-size:13px;margin-bottom:14px;"},"Informasi publik turnamen \u2014 tanpa perlu login."));
@@ -2150,6 +2214,11 @@ function renderPublicJadwal(){
     dayTabs.appendChild(el("button",{class: publicLiveDay===d.day?"active":"", onclick:()=>{ publicLiveDay=d.day; render(); }}, d.label));
   });
   sec.appendChild(dayTabs);
+  const lvTabs = el("div",{class:"tabs"});
+  [["ALL","Semua level"]].concat(META.categories.map(c=>[c.code,c.name])).forEach(([code,label])=>{
+    lvTabs.appendChild(el("button",{class: publicJadwalCat===code?"active":"", onclick:()=>{ publicJadwalCat=code; render(); }}, label));
+  });
+  sec.appendChild(lvTabs);
 
   const scrollWrap = el("div",{class:"sched-scroll"});
   const table = el("table",{class:"sched-table"});
@@ -2158,12 +2227,13 @@ function renderPublicJadwal(){
   COURTS.forEach(c=> thead.appendChild(el("th",{},"Lapangan "+c)));
   table.appendChild(thead);
   for(let idx=0; idx<SLOTS_PER_DAY; idx++){
-    const occAny = COURTS.some(c=>scheduleOccupant(publicLiveDay, idx, c));
+    const occAny = COURTS.some(c=>{ const o = scheduleOccupant(publicLiveDay, idx, c); return o && (publicJadwalCat==="ALL" || o.category===publicJadwalCat); });
     if(!occAny) continue;
     const tr = el("tr",{});
     tr.appendChild(el("td",{class:"sched-time"}, timeLabel(idx)));
     COURTS.forEach(court=>{
-      const occ = scheduleOccupant(publicLiveDay, idx, court);
+      let occ = scheduleOccupant(publicLiveDay, idx, court);
+      if(occ && publicJadwalCat!=="ALL" && occ.category!==publicJadwalCat) occ = null;
       if(occ){
         const m = matchById(occ.category, occ.matchId);
         const cat = catByCode(occ.category);
@@ -5467,6 +5537,8 @@ function viewAdminSettings(){
   pubToggleRow.appendChild(pubSw);
   pubCard.appendChild(pubToggleRow);
   sec.appendChild(pubCard);
+  sec.appendChild(renderPlayerLinksCard());
+  sec.appendChild(renderWaBlastCard());
 
   sec.appendChild(el("div",{class:"section-title", style:"margin-top:20px;"},"Daftar Wasit"));
   const refCard = el("div",{class:"card"});
@@ -5706,21 +5778,288 @@ function render(){
   }
 }
 
+/* ============ ADMIN: LINK & QR PEMAIN, KIRIM JADWAL WA ============ */
+let QR_READY = null;
+function loadQrLib(){
+  if(typeof window.qrcode==="function") return Promise.resolve();
+  if(!QR_READY) QR_READY = new Promise((res, rej)=>{
+    const sc = document.createElement("script");
+    sc.src = "/vendor/qrcode.js"; sc.onload = res; sc.onerror = ()=>{ QR_READY = null; rej(new Error("qr")); };
+    document.head.appendChild(sc);
+  });
+  return QR_READY;
+}
+function qrSvg(text){
+  const q = window.qrcode(0, "M"); q.addData(text); q.make();
+  return q.createSvgTag({ cellSize: 4, margin: 2, scalable: true });
+}
+function renderPlayerLinksCard(){
+  const sec = el("div",{});
+  sec.appendChild(el("div",{class:"section-title", style:"margin-top:20px;"},"Link & QR untuk Pemain"));
+  const card = el("div",{class:"card"});
+  card.appendChild(el("div",{style:"font-size:12.5px;color:var(--ink-dim);margin-bottom:12px;"},"Tempel QR ini di hall / grup WA. Pemain scan sekali selagi ada sinyal \u2192 halaman tersimpan di HP dan tetap terbuka saat sinyal jelek. Halaman hanya terisi bila \u201cPublikasikan ke Halaman Live\u201d aktif."));
+  const items = META.categories.map(c=>({ title:"Bagan "+c.name, url: deepLink("bagan", c.code) }))
+    .concat([{ title:"Jadwal Lengkap", url: deepLink("jadwal") }, { title:"Jadwalku (per pasangan)", url: deepLink("jadwalku") }, { title:"Live & Hasil", url: deepLink("live") }]);
+  const root = el("div",{id:"qr-print-root"});
+  const grid = el("div",{class:"qr-grid"});
+  const boxes = items.map(it=>{
+    const box = el("div",{class:"qr-box"});
+    grid.appendChild(el("div",{class:"qr-tile"},[
+      el("div",{class:"qr-title"}, it.title), box, el("div",{class:"qr-url"}, it.url),
+      el("button",{class:"btn btn-outline", style:"margin-top:6px;font-size:11px;padding:4px 8px;color:#111;border-color:#111;", onclick:async ()=>{
+        try{ await navigator.clipboard.writeText(it.url); showToast("Link disalin."); }catch(e){ showToast(it.url, 5000); }
+      }},"Salin link"),
+    ]));
+    return box;
+  });
+  root.appendChild(grid);
+  card.appendChild(root);
+  card.appendChild(el("button",{class:"btn btn-gold btn-block", style:"margin-top:12px;", onclick:()=>{
+    document.body.classList.add("printing-qr");
+    const done = ()=>{ document.body.classList.remove("printing-qr"); window.removeEventListener("afterprint", done); };
+    window.addEventListener("afterprint", done);
+    window.print();
+  }},"\ud83d\udda8 Cetak semua QR"));
+  loadQrLib().then(()=>{ items.forEach((it,i)=>{ boxes[i].innerHTML = qrSvg(it.url); }); })
+    .catch(()=>{ boxes.forEach(b=>{ b.textContent = "QR gagal dimuat \u2014 pakai link di bawah."; }); });
+  sec.appendChild(card);
+  return sec;
+}
+
+let waBlastCat = "ALL";
+function waSentMap(){ try{ return JSON.parse(localStorage.getItem("pbs_wa_sent")||"{}"); }catch(e){ return {}; } }
+function markWaSent(id){ try{ const m = waSentMap(); m[id] = nowIso(); localStorage.setItem("pbs_wa_sent", JSON.stringify(m)); }catch(e){} }
+function sendScheduleWa(r){
+  const num = normalizeWhatsapp(r.whatsapp||"");
+  if(!num || num.length < 8){ showToast("Nomor WhatsApp tidak valid."); return; }
+  const msg = buildMessage("MATCH_SCHEDULE_INFO", r, {});
+  window.open("https://wa.me/"+num.replace("+","")+"?text="+encodeURIComponent(msg), "_blank");
+  markWaSent(r.id);
+  // Catat ke riwayat notifikasi pendaftaran (tidak menahan pembukaan WhatsApp).
+  loadRegFull(r.id).then(full=>{
+    if(!full) return;
+    full.notifications = full.notifications || [];
+    full.notifications.unshift({ id: uid(), type:"MATCH_SCHEDULE_INFO", message: msg, status:"SENT", createdAt: nowIso(), sentAt: nowIso(), errorMessage:"", providerMessageId:"" });
+    if(full.notifications.length>20) full.notifications = full.notifications.slice(0,20);
+    persistReg(full);
+  }).catch(e=>console.error(e));
+}
+function renderWaBlastCard(){
+  const sec = el("div",{});
+  sec.appendChild(el("div",{class:"section-title", style:"margin-top:20px;"},"Kirim Jadwal ke Pemain (WhatsApp)"));
+  const card = el("div",{class:"card"});
+  card.appendChild(el("div",{style:"font-size:12.5px;color:var(--ink-dim);margin-bottom:10px;"},"Satu tap per pasangan: WhatsApp terbuka dengan pesan jadwal + link bagan siap kirim, tinggal tekan Kirim. (Pengiriman otomatis massal butuh WhatsApp Business API \u2014 belum dipasang.) Tanda \u201cterkirim\u201d tersimpan di perangkat ini."));
+  const tabs = el("div",{class:"tabs"});
+  [["ALL","Semua"]].concat(META.categories.map(c=>[c.code,c.name])).forEach(([code,label])=>{
+    tabs.appendChild(el("button",{class: waBlastCat===code?"active":"", onclick:()=>{ waBlastCat=code; render(); }}, label));
+  });
+  card.appendChild(tabs);
+  const sent = waSentMap();
+  const rows = INDEX.filter(r=>r.status==="REGISTERED" && !r.isDemo && (waBlastCat==="ALL" || r.category===waBlastCat))
+    .sort((a,b)=> (a.category+a.player1).localeCompare(b.category+b.player1));
+  const done = rows.filter(r=>sent[r.id]).length;
+  card.appendChild(el("div",{style:"font-weight:700;font-size:13px;margin:8px 0;"},"Terkirim "+done+" / "+rows.length));
+  if(rows.length===0) card.appendChild(el("div",{class:"empty"},"Belum ada pasangan terdaftar."));
+  rows.forEach(r=>{
+    const hasSched = participantMatches(r.id, r.category).some(m=>scheduleFor(m.id));
+    card.appendChild(el("div",{class:"wa-row"},[
+      el("div",{},[
+        el("div",{style:"font-weight:700;"}, r.player1+" / "+r.player2),
+        el("div",{style:"font-size:11px;color:var(--ink-faint);"}, (catByCode(r.category)||{}).name+(r.club?" \u00b7 "+r.club:"")+(hasSched?"":" \u00b7 jadwal belum diatur")+(sent[r.id]?" \u00b7 terkirim "+hhmm(Date.parse(sent[r.id])):"")),
+      ]),
+      el("button",{class:"btn "+(sent[r.id]?"btn-outline":"btn-gold"), style:"white-space:nowrap;", onclick:()=>{ sendScheduleWa(r); render(); }}, sent[r.id]?"Kirim ulang":"Kirim WA"),
+    ]));
+  });
+  sec.appendChild(card);
+  return sec;
+}
+
+/* ============ PLAYER LINKS + OFFLINE (halaman pemain) ============ */
+const PUB_CACHE_KEY = "pbs_pub_v1";
+const MY_REG_KEY = "pbs_my_reg";
+const PLAYER_HASH_RE = /^#(aturan|live|jadwal|bagan|hasil)(-[a-z]+)?$|^#jadwalku$/i;
+let PUB_STAMP = null;     // ms epoch data terakhir yang berhasil dimuat/ditampilkan
+let PUB_STALE = false;    // true = sedang menampilkan cache karena gagal memuat
+let PUB_SIG = "";
+let pubRefreshing = false;
+
+function deepLink(kind, catCode){
+  const base = location.origin + location.pathname;
+  if(kind==="jadwalku") return base + "#jadwalku";
+  return base + "#" + kind + (catCode ? "-" + String(catCode).toLowerCase() : "");
+}
+function hhmm(ms){
+  const d = new Date(ms);
+  return String(d.getHours()).padStart(2,"0") + ":" + String(d.getMinutes()).padStart(2,"0");
+}
+function freshnessBar(){
+  if(adminSession || refereeScope || !PUB_STAMP) return el("div",{style:"display:none;"});
+  if(PUB_STALE){
+    return el("div",{class:"offline-bar stale"},[
+      el("b",{},"Sinyal bermasalah — "),
+      "menampilkan data terakhir yang tersimpan (diperbarui "+hhmm(PUB_STAMP)+"). Otomatis diperbarui begitu sinyal kembali. Jadwal bisa berubah, tanya panitia bila ragu."
+    ]);
+  }
+  return el("div",{class:"offline-bar"},"Data diperbarui "+hhmm(PUB_STAMP)+" · otomatis disegarkan tiap 1 menit");
+}
+function pubSignature(){
+  try{ return JSON.stringify([PUB_ROWS, MATCHES, SCHEDULE, META.settings, META.categories]); }catch(e){ return String(Date.now()); }
+}
+function applyPublicBundle(b){
+  applyMetaRow(b.meta);
+  PUB_ROWS = b.idx || [];
+  INDEX = PUB_ROWS.map(pubRowToSummary);
+  publicIndexError = false;
+  applyPhase2(b.dr, b.ma, b.sc);
+  Object.keys(REG_CACHE).forEach(id=>{
+    const row = PUB_ROWS.find(r=>r.id===id);
+    REG_CACHE[id] = row ? pubRowToReg(row) : null;
+  });
+}
+function withTimeout(promise, ms){
+  return Promise.race([promise, new Promise((_,rej)=>setTimeout(()=>rej(new Error("timeout")), ms))]);
+}
+async function fetchPublicBundle(){
+  const [m, idx, dr, ma, sc] = await Promise.all([
+    sb.from("tournament_settings").select("*").eq("id",1).maybeSingle(),
+    sb.from("registrations_public").select("*"),
+    sb.from("drawing").select("*"),
+    sb.from("matches").select("*"),
+    sb.from("schedule").select("*").eq("id",1).maybeSingle(),
+  ]);
+  for(const r of [m, idx, dr, ma, sc]){ if(r.error) throw r.error; }
+  return { meta: m.data, idx: idx.data || [], dr: dr.data || [], ma: ma.data || [], sc: sc.data };
+}
+function savePubCache(b){
+  try{ localStorage.setItem(PUB_CACHE_KEY, JSON.stringify({ t: Date.now(), b })); }catch(e){}
+}
+function readPubCache(){
+  try{
+    const c = JSON.parse(localStorage.getItem(PUB_CACHE_KEY) || "null");
+    return c && c.b && c.b.meta !== undefined ? c : null;
+  }catch(e){ return null; }
+}
+/* Muat data publik: jaringan dulu (maks 8 dtk), jika gagal pakai cache terakhir. Mengembalikan true jika berhasil dari salah satu. */
+async function loadPublicData(){
+  try{
+    const b = await withTimeout(fetchPublicBundle(), 8000);
+    applyPublicBundle(b);
+    PUB_STAMP = Date.now(); PUB_STALE = false;
+    savePubCache(b);
+    PUB_SIG = pubSignature();
+    return true;
+  }catch(e){
+    console.error(e);
+    const c = readPubCache();
+    if(c){
+      applyPublicBundle(c.b);
+      PUB_STAMP = c.t; PUB_STALE = true;
+      PUB_SIG = pubSignature();
+      return true;
+    }
+    return false;
+  }
+}
+async function refreshPublic(){
+  if(pubRefreshing || adminSession || refereeScope || refDemo || !ready) return;
+  if(route && (route.name==="tv" || String(route.name).startsWith("admin"))) return;
+  pubRefreshing = true;
+  const wasStale = PUB_STALE;
+  try{
+    const b = await withTimeout(fetchPublicBundle(), 8000);
+    applyPublicBundle(b);
+    PUB_STAMP = Date.now(); PUB_STALE = false;
+    savePubCache(b);
+  }catch(e){
+    PUB_STALE = true;
+  }
+  pubRefreshing = false;
+  const sig = pubSignature();
+  const changed = sig !== PUB_SIG || wasStale !== PUB_STALE;
+  PUB_SIG = sig;
+  const a = document.activeElement;
+  const typing = a && (a.tagName==="INPUT" || a.tagName==="TEXTAREA" || a.tagName==="SELECT");
+  if(changed && !typing && route && ["home","status","public-live"].includes(route.name)) render();
+}
+function rememberMyReg(){
+  try{
+    if(statusFoundId && statusFoundId!=="notfound" && statusFoundId!=="ambiguous"){
+      const r = INDEX.find(x=>x.id===statusFoundId);
+      if(r && r.regNo) localStorage.setItem(MY_REG_KEY, r.regNo);
+    }
+  }catch(e){}
+}
+function syncPlayerHash(){
+  try{
+    let h = "#" + publicLiveTab;
+    if(publicLiveTab==="jadwal" && publicJadwalCat!=="ALL") h += "-" + publicJadwalCat.toLowerCase();
+    else if((publicLiveTab==="bagan" || publicLiveTab==="hasil") && publicLiveCat) h += "-" + publicLiveCat.toLowerCase();
+    if(location.hash !== h) history.replaceState(null, "", location.pathname + location.search + h);
+  }catch(e){}
+}
+/* Peta hash -> route halaman pemain. Mengembalikan route atau null. */
+function playerRouteFromHash(hash){
+  const h = String(hash||"").replace(/^#/,"").toLowerCase();
+  if(h==="jadwalku"){
+    let saved = ""; try{ saved = localStorage.getItem(MY_REG_KEY) || ""; }catch(e){}
+    return { name:"status", params: saved ? { regNo: saved } : {} };
+  }
+  const m = h.match(/^(aturan|live|jadwal|bagan|hasil)(?:-([a-z]+))?$/);
+  if(!m) return null;
+  publicLiveTab = m[1];
+  if(m[2]){
+    const c = META.categories.find(x=>x.code.toLowerCase()===m[2]);
+    if(c){ if(m[1]==="jadwal") publicJadwalCat = c.code; else publicLiveCat = c.code; }
+  }
+  return { name:"public-live", params:{} };
+}
+
 /* ============ INIT ============ */
 (async function init(){
-  await loadMeta();
-  await loadIndex();
-  await loadPhase2();
+  let pubOk = false;
+  if(!adminSession) pubOk = await loadPublicData();
+  if(!pubOk){
+    await loadMeta();
+    await loadIndex();
+    await loadPhase2();
+  }
   await loadExpenses();
   ready = true;
   const urlParams = new URLSearchParams(location.search);
   const regParam = urlParams.get("reg");
   if(regParam){ route = {name:"status", params:{regNo: regParam}}; }
+  const pr = playerRouteFromHash(location.hash);
+  if(pr && !regParam) route = pr;
   if(location.hash==="#tv"){ route = {name:"tv", params:{}}; }
   else if(location.hash==="#wasit"){ route = {name:"admin-login", params:{}}; }
   else if(location.hash==="#latihan"){ startRefDemo(); return; }
   render();
+  if(!adminSession && !refereeScope){
+    if(PLAYER_SW_OK()){
+      navigator.serviceWorker.register("/sw.js").then(()=>navigator.serviceWorker.ready).then(()=>{
+        // Kunjungan pertama dimuat sebelum service worker aktif: ambil ulang modul yang sudah dipakai halaman
+        // lewat service worker agar tersimpan dan halaman bisa dibuka tanpa sinyal.
+        setTimeout(()=>{
+          try{
+            performance.getEntriesByType("resource")
+              .filter(r=>/esm\.sh/.test(r.name) || (r.name.indexOf(location.origin)===0 && /\.m?js(\?|$)/.test(r.name) && r.name.indexOf("/sw.js")<0))
+              .forEach(r=>{ fetch(r.name).catch(()=>{}); });
+          }catch(e){}
+        }, 1500);
+      }).catch(()=>{});
+    }
+    setInterval(()=>{ if(!document.hidden) refreshPublic(); }, 60000);
+    window.addEventListener("online", refreshPublic);
+    document.addEventListener("visibilitychange", ()=>{ if(!document.hidden) refreshPublic(); });
+    window.addEventListener("hashchange", ()=>{
+      const r2 = playerRouteFromHash(location.hash);
+      if(r2 && !adminSession && !refereeScope){ route = r2; render(); }
+    });
+  }
 })();
+function PLAYER_SW_OK(){
+  try{ return "serviceWorker" in navigator && (location.protocol==="https:" || location.hostname==="localhost"); }catch(e){ return false; }
+}
 </script>
 </body>
 </html>
