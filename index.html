@@ -1750,9 +1750,9 @@ function viewStatus(params){
   rememberMyReg();
   const sec = el("div",{class:"section"});
   sec.appendChild(el("h2",{style:"font-size:22px;margin:0 0 4px;"},"Cek Jadwal & Status"));
-  sec.appendChild(el("div",{style:"color:var(--ink-dim);font-size:13px;margin-bottom:16px;"},"Masukkan kode booking (dikirim panitia via WhatsApp) atau nama PB/klub kamu untuk lihat jadwal main, hasil, dan status."));
+  sec.appendChild(el("div",{style:"color:var(--ink-dim);font-size:13px;margin-bottom:16px;"},"Masukkan kode booking (dikirim panitia via WhatsApp), nomor HP yang didaftarkan, atau nama PB/klub kamu untuk lihat jadwal main, hasil, dan status."));
   const searchBox = el("div",{class:"search-box"});
-  const input = el("input",{placeholder:"Kode booking atau nama PB", value: statusLookupValue});
+  const input = el("input",{placeholder:"Kode booking, nomor HP, atau nama PB", value: statusLookupValue});
   input.addEventListener("input",(e)=>{ statusLookupValue = e.target.value; });
   input.addEventListener("keydown",(e)=>{ if(e.key==="Enter") doStatusLookup(); });
   searchBox.appendChild(input);
@@ -1760,9 +1760,15 @@ function viewStatus(params){
   sec.appendChild(el("button",{class:"btn btn-gold btn-block", onclick: doStatusLookup},"Cari"));
   wrap.appendChild(sec);
 
-  if(statusFoundId==="notfound"){
+  if(statusPhoneBusy){
+    wrap.appendChild(el("div",{class:"section", style:"padding-top:0;"},[el("div",{style:"font-size:12.5px;color:var(--ink-faint);"},"Mencari\u2026")]));
+  } else if(statusPhoneMsg){
+    wrap.appendChild(el("div",{class:"section", style:"padding-top:0;"},[el("div",{class:"flag"},statusPhoneMsg)]));
+  } else if(statusChoices){
+    wrap.appendChild(renderCoupleChooser(statusChoices));
+  } else if(statusFoundId==="notfound"){
     const s2 = el("div",{class:"section", style:"padding-top:0;"});
-    s2.appendChild(el("div",{class:"flag"},"Tidak ditemukan. Periksa kembali kode booking atau nama PB kamu."));
+    s2.appendChild(el("div",{class:"flag"},"Tidak ditemukan. Periksa kembali kode booking, nama PB, atau nomor HP kamu."));
     wrap.appendChild(s2);
   } else if(statusFoundId==="ambiguous"){
     const s2 = el("div",{class:"section", style:"padding-top:0;"});
@@ -1770,15 +1776,67 @@ function viewStatus(params){
     wrap.appendChild(s2);
   } else if(statusFoundId){
     const reg = REG_CACHE[statusFoundId];
+    if(savedChoices().length>1){
+      wrap.appendChild(el("div",{class:"section", style:"padding-top:0;padding-bottom:10px;"},[
+        el("button",{class:"btn btn-outline", style:"font-size:12px;padding:6px 12px;", onclick:()=>{ statusChoices = savedChoices(); statusFoundId = null; render(); }},"\u21c4 Ganti pasangan")]));
+    }
     if(reg===undefined){ ensureRegLoaded(statusFoundId); wrap.appendChild(loadingBlock()); }
     else if(reg===null){ wrap.appendChild(el("div",{class:"section"},[el("div",{class:"flag"},"Data tidak ditemukan.")])); }
     else { wrap.appendChild(renderRegistrationStatusCard(reg)); }
   }
   return wrap;
 }
+let statusChoices = null;      // daftar pasangan untuk dipilih (satu nomor HP, beberapa pasangan)
+let statusPhoneBusy = false;
+let statusPhoneMsg = "";
+const MY_CHOICES_KEY = "pbs_my_choices";
+function looksLikePhone(q){ return /^(0|62)\d{8,13}$/.test(String(q||"").replace(/[\s\-+().]/g,"")); }
+function savedChoices(){ try{ return JSON.parse(localStorage.getItem(MY_CHOICES_KEY)||"[]"); }catch(e){ return []; } }
+function chooseCouple(regNo){
+  statusChoices = null; statusPhoneMsg = "";
+  statusLookupValue = regNo;
+  statusFoundId = lookupStatusByRegNo(regNo);
+  render();
+}
+async function lookupByPhone(q){
+  statusFoundId = null; statusChoices = null; statusPhoneMsg = ""; statusPhoneBusy = true; render();
+  try{
+    const r = await withTimeout(fetch("/api/player-find?phone="+encodeURIComponent(q)), 8000);
+    if(r.status===429){ statusPhoneMsg = "Terlalu banyak percobaan. Tunggu beberapa menit atau pakai kode booking."; }
+    else {
+      const j = await r.json();
+      if(!r.ok || !j.ok) throw new Error("bad");
+      const list = j.data || [];
+      if(list.length===0){ statusFoundId = "notfound"; }
+      else {
+        try{ localStorage.setItem(MY_CHOICES_KEY, JSON.stringify(list)); }catch(e){}
+        if(list.length===1){ statusLookupValue = list[0].regNo; statusFoundId = lookupStatusByRegNo(list[0].regNo); }
+        else statusChoices = list;
+      }
+    }
+  }catch(e){ statusPhoneMsg = "Pencarian lewat nomor HP butuh sinyal. Coba lagi, atau pakai kode booking."; }
+  statusPhoneBusy = false; render();
+}
 function doStatusLookup(){
+  statusChoices = null; statusPhoneMsg = "";
+  if(looksLikePhone(statusLookupValue)){ lookupByPhone(statusLookupValue); return; }
   statusFoundId = lookupStatusByRegNo(statusLookupValue);
   render();
+}
+function renderCoupleChooser(list){
+  const s2 = el("div",{class:"section", style:"padding-top:0;"});
+  s2.appendChild(el("div",{style:"font-weight:800;font-size:14px;margin-bottom:4px;"},"Nomor ini terdaftar untuk "+list.length+" pasangan"));
+  s2.appendChild(el("div",{style:"font-size:12.5px;color:var(--ink-dim);margin-bottom:10px;"},"Pilih pasanganmu:"));
+  list.forEach(c=>{
+    const cat = catByCode(c.category);
+    s2.appendChild(el("button",{class:"card", style:"display:block;width:100%;text-align:left;margin-bottom:10px;cursor:pointer;color:var(--ink,#f4f1e8);font:inherit;", onclick:()=>chooseCouple(c.regNo)},[
+      el("div",{style:"display:flex;justify-content:space-between;align-items:baseline;gap:8px;"},[
+        el("div",{style:"font-weight:800;font-size:15px;"}, c.player1+" / "+c.player2),
+        el("div",{style:"font-size:11px;color:var(--ink-faint);"}, c.regNo)]),
+      el("div",{style:"font-size:12.5px;margin-top:4px;"+(cat?"color:var("+cat.accentVar+");font-weight:700;":"")}, (cat?cat.name:c.category)+(c.club?" \u00b7 "+c.club:"")),
+    ]));
+  });
+  return s2;
 }
 
 function participantMatches(regId, category){
