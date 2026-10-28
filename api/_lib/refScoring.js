@@ -69,6 +69,31 @@ function applyRefAction(action, m, list, p, ctx) {
     return m;
   }
 
+  if (action === "REF_RESULT") {
+    // Isi hasil akhir langsung (papan skor manual / HP wasit bermasalah): skor 42 tanpa deuce + jumlah kok.
+    if (closed.includes(m.status)) throw fail("match_closed", 409);
+    const a = m.sideA && m.sideA.type === "participant" && m.sideA.participantId;
+    const b = m.sideB && m.sideB.type === "participant" && m.sideB.participantId;
+    if (!a || !b) throw fail("sides_unknown", 409);
+    const sa = p.scoreA, sb = p.scoreB, kok = p.kok;
+    if (!Number.isInteger(sa) || !Number.isInteger(sb) || sa < 0 || sb < 0) throw fail("invalid_score");
+    const hi = Math.max(sa, sb), lo = Math.min(sa, sb);
+    if (hi !== target || lo >= target) throw fail("invalid_score");
+    if (!Number.isInteger(kok) || kok < 1 || kok > 30) throw fail("invalid_kok");
+    const na = ctx.names[a], nb = ctx.names[b];
+    if (!na || !nb) throw fail("participant_not_found", 409);
+    const prev = m.liveScoring || {};
+    m.liveScoring = {
+      sideAPlayers: na, sideBPlayers: nb, scoreA: sa, scoreB: sb, servingSide: "A",
+      serverToggleA: 0, serverToggleB: 0, kokCount: kok, history: [],
+      startedAt: prev.startedAt || now, switchSeen: true, switchAck: true, lastBy: who, manual: true,
+    };
+    if (!m.actualStartAt) m.actualStartAt = now;
+    m.manualResult = true;
+    finishMatch(m, list, who, now);
+    return m;
+  }
+
   if (!m.liveScoring) throw fail("not_started", 409);
   const ls = m.liveScoring;
   if (closed.includes(m.status)) throw fail("match_closed", 409);

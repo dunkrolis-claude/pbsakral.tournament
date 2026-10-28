@@ -4112,6 +4112,9 @@ function viewAdminMatchControl(){
     const actions = el("div",{class:"mc-actions"});
     const status = match.status || "SCHEDULED";
     const bothKnown = match.sideA.type==="participant" && match.sideA.participantId && match.sideB.type==="participant" && match.sideB.participantId;
+    if(bothKnown && (status==="SCHEDULED" || status==="CALLING" || status==="DELAYED")){
+      actions.appendChild(el("button",{class:"btn btn-ok btn-xs", onclick:()=>{ scoreModalTarget={category:match.category, matchId:match.id}; render(); }},"Input Skor"));
+    }
     if(status==="SCHEDULED"){
       actions.appendChild(el("button",{class:"btn btn-info btn-xs", onclick:()=>mcCall(match.category, match)},"Panggil"));
       actions.appendChild(el("button",{class:"btn btn-outline btn-xs", onclick:()=>mcDelay(match.category, match)},"Tunda"));
@@ -4187,6 +4190,14 @@ function renderScoreModal(){
     if(sa===""||sb===""||isNaN(na)||isNaN(nb)||na<0||nb<0){ errBox.appendChild(el("div",{class:"flag"},"Isi skor dengan angka non-negatif.")); return; }
     if(na===nb){ errBox.appendChild(el("div",{class:"flag"},"Skor tidak boleh sama untuk match normal.")); return; }
     if(!nk || nk<1){ errBox.appendChild(el("div",{class:"flag"},"Jumlah kok minimal 1.")); return; }
+    const tgt = (META.settings && META.settings.scoringTarget) || 42;
+    const wkey = scoreModalTarget.category+"|"+scoreModalTarget.matchId+"|"+na+"-"+nb;
+    if((Math.max(na,nb)!==tgt || Math.min(na,nb)>=tgt) && renderScoreModal._warned!==wkey){
+      renderScoreModal._warned = wkey;
+      errBox.appendChild(el("div",{class:"flag warn"},"Skor ini tidak sesuai aturan (pemenang tepat "+tgt+", lawan di bawah "+tgt+"). Periksa lagi. Tekan Simpan sekali lagi bila memang benar (misal match dihentikan)."));
+      return;
+    }
+    renderScoreModal._warned = null;
     scoreModalTarget = null;
     await mcFinish(category, m, na, nb, nk);
   }},"Simpan Skor"));
@@ -5061,7 +5072,8 @@ const REF_ERRORS = {
   stale_score:"Skor di server sudah berbeda — layar disegarkan.", match_closed:"Pertandingan ini sudah selesai.",
   forbidden_court:"Match ini bukan di lapangan Anda.", sides_unknown:"Kedua pasangan belum diketahui.",
   busy_try_again:"Server sibuk, coba tap lagi.", not_started:"Pertandingan belum dimulai.", score_tied:"Skor sama, tidak bisa diselesaikan.",
-  nothing_to_undo:"Tidak ada poin untuk dibatalkan.", unauthorized:"Sesi habis, silakan masuk lagi."
+  nothing_to_undo:"Tidak ada poin untuk dibatalkan.", unauthorized:"Sesi habis, silakan masuk lagi.",
+  invalid_score:"Skor tidak valid: pemenang harus tepat 42 dan lawan di bawah 42.", invalid_kok:"Jumlah kok harus 1 sampai 30.", participant_not_found:"Data pasangan tidak ditemukan."
 };
 // Set 1 = sebelum tukar lapangan; Set 2 = setelah pemain tukar (skor tetap berlanjut sampai 42).
 function refSetLabel(ls){ return (ls && ls.switchSeen && ls.switchAck) ? "Set 2" : "Set 1"; }
@@ -5128,7 +5140,10 @@ function viewReferee(){
       const ready = m.sideA.type==="participant" && m.sideB.type==="participant";
       const ongoing = m.status==="ON_COURT" && m.liveScoring;
       if(!ready) card.appendChild(el("div",{class:"flag", style:"margin:8px 0 0;"},"Menunggu hasil babak sebelumnya."));
-      else card.appendChild(el("button",{class:"btn btn-gold btn-block", style:"margin-top:10px;", onclick:()=> nav(ongoing?"wasit-score":"wasit-start", {category:e.category, matchId:m.id})}, ongoing ? "Lanjutkan Skor ("+m.liveScoring.scoreA+"–"+m.liveScoring.scoreB+")" : "Mulai Pertandingan"));
+      else {
+        card.appendChild(el("button",{class:"btn btn-gold btn-block", style:"margin-top:10px;", onclick:()=> nav(ongoing?"wasit-score":"wasit-start", {category:e.category, matchId:m.id})}, ongoing ? "Lanjutkan Skor ("+m.liveScoring.scoreA+"–"+m.liveScoring.scoreB+")" : "Mulai Pertandingan"));
+        card.appendChild(el("button",{class:"btn btn-outline btn-block", style:"margin-top:8px;", onclick:()=> nav("wasit-hasil", {category:e.category, matchId:m.id})}, "Isi Skor & Kok Manual"));
+      }
     }
     sec.appendChild(card);
   });
@@ -5218,7 +5233,59 @@ function viewRefereeScoring(params){
     onConfirm: async ()=>{ if(ls.scoreA===ls.scoreB){ showToast("Skor tidak boleh sama."); return; } const r = await refCall("REF_FINISH_NOW",{},category,matchId); if(r){ await loadRefBoard(); nav("wasit"); } }
   })},"Selesaikan Sekarang"));
   sec.appendChild(row);
+  sec.appendChild(el("button",{class:"btn btn-outline btn-block", style:"margin-top:10px;", onclick:()=>nav("wasit-hasil", {category, matchId})},"Salah hitung? Isi skor akhir manual"));
   sec.appendChild(el("button",{class:"btn btn-outline btn-block", style:"margin-top:10px;", onclick:()=>nav("wasit")},"Kembali ke Daftar Match"));
+  wrap.appendChild(sec);
+  return wrap;
+}
+/* Isi hasil akhir langsung: untuk papan skor manual atau HP wasit bermasalah. */
+let refResultDraft = null; // isi form tetap ada saat dialog konfirmasi menggambar ulang halaman
+function viewRefereeResult(params){
+  const wrap = el("div",{});
+  wrap.appendChild(topbar("wasit"));
+  wrap.appendChild(backRow(()=>nav("wasit")));
+  const {category, matchId} = params;
+  const m = refFind(category, matchId);
+  const sec = el("div",{class:"section"});
+  if(!m){ sec.appendChild(el("div",{class:"empty"},"Match tidak ditemukan.")); wrap.appendChild(sec); return wrap; }
+  const target = (REF_BOARD && REF_BOARD.target) || 42;
+  sec.appendChild(el("h2",{style:"font-size:19px;margin:0 0 4px;"},"Isi Skor Akhir & Kok"));
+  sec.appendChild(el("div",{style:"color:var(--ink-dim);font-size:13px;margin-bottom:14px;"}, catByCode(category).name+" · "+(ROUND_LABELS[m.round]||m.round)+" #"+m.matchNo));
+  if(m.status==="FINISHED" || m.status==="WO"){ sec.appendChild(el("div",{class:"flag"},"Pertandingan ini sudah selesai.")); wrap.appendChild(sec); return wrap; }
+  const nameA = refSideName(m,"sideA"), nameB = refSideName(m,"sideB");
+  const dkey = category+"|"+matchId;
+  if(!refResultDraft || refResultDraft.key!==dkey) refResultDraft = {key:dkey, sa:"", sb:"", kok:1};
+  const D = refResultDraft;
+  const mk = (label)=>{
+    const f = el("div",{class:"field"}); f.appendChild(el("label",{}, label));
+    const inp = el("input",{type:"number", inputmode:"numeric", min:"0", max:String(target), placeholder:"Skor", style:"font-size:28px;font-weight:800;text-align:center;"});
+    f.appendChild(inp); sec.appendChild(f); return inp;
+  };
+  const inA = mk(nameA), inB = mk(nameB);
+  inA.value = D.sa; inB.value = D.sb;
+  inA.addEventListener("input",e=>{ D.sa = e.target.value; }); inB.addEventListener("input",e=>{ D.sb = e.target.value; });
+  const kokBox = el("div",{class:"field"}); kokBox.appendChild(el("label",{},"Jumlah kok terpakai"));
+  const kokRow = el("div",{style:"display:flex;align-items:center;gap:14px;"});
+  const kokVal = el("div",{style:"font-size:28px;font-weight:800;min-width:40px;text-align:center;color:var(--gold-bright);"}, String(D.kok));
+  kokRow.appendChild(el("button",{class:"btn btn-outline", type:"button", onclick:()=>{ D.kok = Math.max(1,D.kok-1); kokVal.textContent = String(D.kok); }},"−"));
+  kokRow.appendChild(kokVal);
+  kokRow.appendChild(el("button",{class:"btn btn-outline", type:"button", onclick:()=>{ D.kok = Math.min(30,D.kok+1); kokVal.textContent = String(D.kok); }},"+"));
+  kokBox.appendChild(kokRow); sec.appendChild(kokBox);
+  sec.appendChild(el("div",{style:"font-size:11.5px;color:var(--ink-faint);margin-bottom:10px;"},"Aturan: pemenang tepat "+target+" poin, lawan di bawah "+target+" (tanpa deuce)."));
+  const err = el("div",{}); sec.appendChild(err);
+  sec.appendChild(el("button",{class:"btn btn-gold btn-block", onclick:()=>{
+    err.innerHTML = "";
+    const a = D.sa==="" ? NaN : Number(D.sa), b = D.sb==="" ? NaN : Number(D.sb), kok = D.kok;
+    const bad = (t)=>{ err.appendChild(el("div",{class:"flag"}, t)); };
+    if(!Number.isInteger(a) || !Number.isInteger(b) || a<0 || b<0){ bad("Isi kedua skor dengan angka bulat."); return; }
+    if(Math.max(a,b)!==target || Math.min(a,b)>=target){ bad("Skor tidak valid: pemenang harus tepat "+target+" dan lawan di bawah "+target+"."); return; }
+    const winner = a>b ? nameA : nameB;
+    openConfirm({
+      title:"Simpan hasil ini?", body: nameA+" "+a+" – "+b+" "+nameB+". Pemenang: "+winner+". Kok terpakai: "+kok+". Setelah disimpan, pemenang langsung maju ke babak berikutnya.",
+      confirmLabel:"Simpan Hasil",
+      onConfirm: async ()=>{ const r = await refCall("REF_RESULT",{scoreA:a, scoreB:b, kok},category,matchId); if(r){ refResultDraft = null; showToast("Hasil tersimpan. Pemenang maju ke babak berikutnya."); await loadRefBoard(); nav("wasit"); } }
+    });
+  }},"Simpan Hasil"));
   wrap.appendChild(sec);
   return wrap;
 }
@@ -5409,6 +5476,19 @@ function demoApply(action, m, list, p, target){
     const side = p.servingSide==="B" ? "B" : "A", idx = p.serverIdx===1 ? 1 : 0;
     m.liveScoring = { sideAPlayers:REF_BOARD.names[a], sideBPlayers:REF_BOARD.names[b], scoreA:0, scoreB:0, servingSide:side, serverToggleA: side==="A"?idx:0, serverToggleB: side==="B"?idx:0, kokCount:1, history:[], startedAt:nowIso(), switchSeen:false, switchAck:false };
     m.status = "ON_COURT"; return m;
+  }
+  if(action==="REF_RESULT"){
+    if(closed.includes(m.status)) throw demoFail("match_closed");
+    const a = m.sideA.type==="participant" && m.sideA.participantId, b = m.sideB.type==="participant" && m.sideB.participantId;
+    if(!a || !b) throw demoFail("sides_unknown");
+    const sa=p.scoreA, sb=p.scoreB, kok=p.kok;
+    if(!Number.isInteger(sa)||!Number.isInteger(sb)||sa<0||sb<0) throw demoFail("invalid_score");
+    const hi=Math.max(sa,sb), lo=Math.min(sa,sb);
+    if(hi!==target || lo>=target) throw demoFail("invalid_score");
+    if(!Number.isInteger(kok)||kok<1||kok>30) throw demoFail("invalid_kok");
+    m.liveScoring = { sideAPlayers:REF_BOARD.names[a], sideBPlayers:REF_BOARD.names[b], scoreA:sa, scoreB:sb, servingSide:"A", serverToggleA:0, serverToggleB:0, kokCount:kok, history:[], startedAt:nowIso(), switchSeen:true, switchAck:true, lastBy:"demo", manual:true };
+    m.manualResult = true;
+    finish(); return m;
   }
   if(!m.liveScoring) throw demoFail("not_started");
   const ls = m.liveScoring; if(closed.includes(m.status)) throw demoFail("match_closed");
@@ -5993,6 +6073,7 @@ function render(){
     case "admin-settings": view = adminSession? viewAdminSettings() : viewAdminLogin(); break;
     case "wasit": view = refereeScope? viewReferee() : viewAdminLogin(); break;
     case "wasit-start": view = refereeScope? viewRefereeStart(route.params) : viewAdminLogin(); break;
+    case "wasit-hasil": view = refereeScope? viewRefereeResult(route.params) : viewAdminLogin(); break;
     case "wasit-score": view = refereeScope? viewRefereeScoring(route.params) : viewAdminLogin(); break;
     default: view = viewHome();
   }

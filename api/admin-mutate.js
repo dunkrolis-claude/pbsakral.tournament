@@ -211,7 +211,7 @@ module.exports = async function handler(req, res) {
         const target = (st && Number(st.scoring_target)) || 42;
         const result = await updateOneMatch(supabase, category, matchId, async (m, list) => {
           let names = {};
-          if (action === "REF_START") {
+          if (action === "REF_START" || action === "REF_RESULT") {
             const ids = [m.sideA, m.sideB].filter((x) => x && x.type === "participant" && x.participantId).map((x) => x.participantId);
             if (ids.length) {
               const { data: regs } = await supabase.from("registrations").select("id, player1, player2").in("id", ids);
