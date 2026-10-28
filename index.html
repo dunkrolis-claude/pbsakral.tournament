@@ -268,6 +268,11 @@
   .sched-cell.draft{background:transparent;color:var(--ink-dim);border:1px dashed var(--line);cursor:default;}
   .demo-strip{position:sticky;top:0;z-index:50;display:flex;flex-wrap:wrap;gap:8px;align-items:center;justify-content:space-between;background:#ffb020;color:#1a1200;padding:8px 14px;font-size:12.5px;}
   .demo-strip .btn{color:#1a1200;border-color:#1a1200;}
+  .sched-panel{position:sticky;top:0;z-index:20;background:var(--bg-elev);border:2px solid var(--gold);border-radius:12px;padding:10px 12px;margin-bottom:10px;}
+  .sched-cell.mv-ok{outline:3px solid #3fae5c;outline-offset:-3px;cursor:pointer;opacity:1!important;}
+  .sched-cell.mv-swap{outline:3px solid #ffb020;outline-offset:-3px;cursor:pointer;opacity:1!important;}
+  .sched-cell.mv-bad{opacity:.3!important;}
+  .sched-cell.mv-self{outline:3px solid #fff;outline-offset:-3px;}
   .set-badge{text-align:center;font-family:'Anton';letter-spacing:.12em;font-size:15px;color:var(--ink);margin-bottom:8px;}
   .switch-banner{background:rgba(212,175,55,0.16);border:2px solid var(--gold);border-radius:14px;padding:12px;margin-bottom:12px;text-align:center;animation:swpulse 1.2s ease-in-out infinite;}
   .switch-banner .sb-title{font-family:'Anton';font-size:26px;letter-spacing:.06em;color:var(--gold-bright);}
@@ -872,6 +877,7 @@ async function loadPhase2(){
     else { const { data, error } = await sb.from("schedule").select("*").eq("id",1).maybeSingle(); if(error) throw error; row = data; }
     SCHEDULE = row ? (row.data.list||[]) : [];
     REF_DEFAULTS = Object.assign({ A:"", B:"", C:"", D:"", E:"", RESERVE:"" }, (row && row.data.refDefaults) || {});
+    SCHEDULE_LOG = (row && row.data && row.data.log) || [];
     SCHEDULE_VERSION = row ? row.version : 1;
   }catch(e){ console.error(e); SCHEDULE = []; SCHEDULE_VERSION = 1; }
 }
@@ -907,7 +913,7 @@ async function saveMatches(){
 }
 async function saveSchedule(){
   try{
-    const result = await apiMutate("SAVE_SCHEDULE", { expectedVersion: SCHEDULE_VERSION||1, data: {list: SCHEDULE, refDefaults: REF_DEFAULTS} });
+    const result = await apiMutate("SAVE_SCHEDULE", { expectedVersion: SCHEDULE_VERSION||1, data: {list: SCHEDULE, refDefaults: REF_DEFAULTS, log: SCHEDULE_LOG} });
     SCHEDULE_VERSION = result.data.version;
     return true;
   }catch(e){
@@ -3435,6 +3441,163 @@ async function applyScheduleTemplate(){
   return added;
 }
 
+
+/* ============ EDIT JADWAL: pindah / tukar dengan validasi urutan bagan ============ */
+let schedMove = null;          // {category, matchId} match yang sedang dipilih untuk dipindah
+let SCHEDULE_LOG = [];         // riwayat perubahan (disimpan di schedule.data.log, maks 100)
+const MOVE_LOCKED = ["ON_COURT","CALLING","FINISHED","WO","CANCELLED"];
+function slotOrder(p){ return p.day*1000 + p.timeIndex; }
+function slotText(p){ return "Hari "+p.day+" "+timeLabel(p.timeIndex)+" Lap "+p.court; }
+function feedersOf(m){
+  const out = [];
+  [m.sideA, m.sideB].forEach(s=>{ if(!s) return; if(s.type==="winnerOf" && s.matchId) out.push(s.matchId); else if(s.resolvedFrom) out.push(s.resolvedFrom); });
+  return out;
+}
+function schedMatchLabel(cat, m){ return cat.slice(0,3)+" "+m.round+"#"+m.matchNo; }
+function categoryDay(catCode){ const e = Object.entries(SCHEDULE_DAY_CATS).find(([d,c])=>c.L===catCode||c.H===catCode); return e ? Number(e[0]) : null; }
+/* Cek apakah match boleh ditaruh di slot target. errors = menolak, warnings = hanya peringatan. */
+function validateMove(category, matchId, target){
+  const errors = [], warnings = [];
+  const m = matchById(category, matchId);
+  if(!m) return { ok:false, errors:["Match tidak ditemukan."], warnings, swap:null };
+  const cur = scheduleFor(matchId);
+  if(MOVE_LOCKED.includes(m.status)) errors.push("Match ini sudah dipanggil, berjalan, atau selesai — tidak bisa dipindah.");
+  if(cur && cur.day===target.day && cur.timeIndex===target.timeIndex && cur.court===target.court) errors.push("Match sudah berada di slot ini.");
+  const occ = scheduleOccupant(target.day, target.timeIndex, target.court);
+  let swap = null;
+  if(occ && (!cur || occ.id!==cur.id)){
+    const sm = matchById(occ.category, occ.matchId);
+    if(!cur) errors.push("Slot ini dipakai match lain. Match yang belum terjadwal tidak bisa menukar.");
+    else if(!sm || MOVE_LOCKED.includes(sm.status)) errors.push("Slot ini dipakai match yang sudah berjalan atau selesai.");
+    else swap = { occ, match: sm };
+  }
+  // posisi hipotetis setelah pindah / tukar
+  const pos = {};
+  SCHEDULE.forEach(s=>{ pos[s.matchId] = { day:s.day, timeIndex:s.timeIndex, court:s.court, category:s.category }; });
+  pos[matchId] = { day:target.day, timeIndex:target.timeIndex, court:target.court, category };
+  if(swap && cur) pos[swap.match.id] = { day:cur.day, timeIndex:cur.timeIndex, court:cur.court, category:swap.occ.category };
+  const checks = [[category, m]]; if(swap) checks.push([swap.occ.category, swap.match]);
+  checks.forEach(([cat, mm])=>{
+    const mine = pos[mm.id]; if(!mine) return;
+    const me = schedMatchLabel(cat, mm);
+    feedersOf(mm).forEach(fid=>{
+      const fp = pos[fid], fm = matchById(cat, fid); if(!fp || !fm) return;
+      if(slotOrder(mine) <= slotOrder(fp)) errors.push(me+" harus bermain setelah "+schedMatchLabel(cat,fm)+" ("+slotText(fp)+"), karena pemenangnya maju ke sini.");
+      else if(fp.day===mine.day && mine.timeIndex-fp.timeIndex <= REST_MIN_GAP) warnings.push("Jeda "+me+" dari "+schedMatchLabel(cat,fm)+" pendek bagi pemenang yang maju.");
+    });
+    const down = findDownstreamMatch(cat, mm.id);
+    if(down){
+      const dp = pos[down.match.id];
+      if(dp){
+        if(slotOrder(mine) >= slotOrder(dp)) errors.push(me+" harus bermain sebelum "+schedMatchLabel(cat,down.match)+" ("+slotText(dp)+"), karena pemenangnya maju ke sana.");
+        else if(dp.day===mine.day && dp.timeIndex-mine.timeIndex <= REST_MIN_GAP) warnings.push("Jeda "+me+" ke "+schedMatchLabel(cat,down.match)+" pendek bagi pemenang yang maju.");
+      }
+    }
+    // peserta tidak boleh main di dua lapangan pada jam yang sama; jeda pendek hanya peringatan
+    [mm.sideA, mm.sideB].forEach(side=>{
+      if(!side || side.type!=="participant" || !side.participantId) return;
+      Object.keys(pos).forEach(oid=>{
+        if(oid===mm.id) return;
+        const op = pos[oid]; if(op.day!==mine.day) return;
+        const om = matchById(op.category, oid); if(!om) return;
+        const has = [om.sideA, om.sideB].some(x=>x && x.type==="participant" && x.participantId===side.participantId);
+        if(!has) return;
+        if(op.timeIndex===mine.timeIndex) errors.push(participantLabel(side.participantId)+" bentrok: sudah bermain di "+schedMatchLabel(op.category,om)+" pada jam yang sama.");
+        else if(Math.abs(op.timeIndex-mine.timeIndex) <= REST_MIN_GAP) warnings.push(participantLabel(side.participantId)+" hanya punya jeda singkat antara "+me+" dan "+schedMatchLabel(op.category,om)+".");
+      });
+    });
+    const cd = categoryDay(cat);
+    if(cd && mine.day!==cd) warnings.push(me+" dipindah ke hari yang bukan jadwal kategorinya.");
+    // slot rencana (template) milik match lain yang belum punya tempat
+    const plan = SCHEDULE_PLAN_BY_CELL[mine.day+"-"+mine.timeIndex+"-"+mine.court];
+    if(plan && !swap && !(plan.category===cat && plan.round===mm.round && plan.matchNo===mm.matchNo)){
+      const pm = planMatchFor(plan);
+      if(!pm || !scheduleFor(pm.id)) warnings.push("Slot ini rencana template untuk "+plan.category.slice(0,3)+" "+plan.round+"#"+plan.matchNo+"; match itu nanti perlu dijadwalkan manual.");
+    }
+  });
+  return { ok: errors.length===0, errors:[...new Set(errors)], warnings:[...new Set(warnings)], swap };
+}
+function schedLogPush(text){ SCHEDULE_LOG.unshift({ at: nowIso(), text }); SCHEDULE_LOG = SCHEDULE_LOG.slice(0,100); }
+async function applyMove(category, matchId, target){
+  const v = validateMove(category, matchId, target);
+  if(!v.ok){ showToast(v.errors[0]); return false; }
+  const m = matchById(category, matchId), cur = scheduleFor(matchId);
+  const snapshot = JSON.stringify(SCHEDULE), logSnap = JSON.stringify(SCHEDULE_LOG);
+  const from = cur ? slotText(cur) : "belum terjadwal";
+  if(v.swap){
+    const o = v.swap.occ;
+    const a = { day:cur.day, timeIndex:cur.timeIndex, court:cur.court };
+    cur.day=o.day; cur.timeIndex=o.timeIndex; cur.court=o.court;
+    o.day=a.day; o.timeIndex=a.timeIndex; o.court=a.court;
+    schedLogPush(schedMatchLabel(category,m)+" ditukar dengan "+schedMatchLabel(v.swap.occ.category, v.swap.match)+" ("+from+" ⇄ "+slotText(cur)+")");
+  } else if(cur){
+    cur.day=target.day; cur.timeIndex=target.timeIndex; cur.court=target.court;
+    schedLogPush(schedMatchLabel(category,m)+" dipindah: "+from+" → "+slotText(cur));
+  } else {
+    SCHEDULE.push({ id:uid(), matchId, category, day:target.day, timeIndex:target.timeIndex, court:target.court });
+    if(!m.status) m.status = "SCHEDULED";
+    schedLogPush(schedMatchLabel(category,m)+" dijadwalkan di "+slotText(target));
+  }
+  const ok = await saveSchedule();
+  if(!ok){ SCHEDULE = JSON.parse(snapshot); SCHEDULE_LOG = JSON.parse(logSnap); return false; }
+  return true;
+}
+function allSlotCells(){
+  const out = [];
+  TOURNAMENT_DAYS.forEach(d=>{ for(let i=0;i<SLOTS_PER_DAY;i++) COURTS.forEach(c=>out.push({day:d.day,timeIndex:i,court:c})); });
+  return out;
+}
+/* Slot valid paling awal / paling akhir (kosong atau tukar) untuk match yang dipilih. */
+function bestMoveSlot(category, matchId, which){
+  let best = null;
+  allSlotCells().forEach(t=>{
+    const v = validateMove(category, matchId, t); if(!v.ok) return;
+    const key = slotOrder(t)*10 + (v.swap?0:1) ; // seri: utamakan slot kosong
+    if(!best || (which==="last" ? key>best.key : key<best.key)) best = { t, key, v };
+  });
+  return best;
+}
+function confirmMove(category, matchId, target){
+  const v = validateMove(category, matchId, target);
+  if(!v.ok){ showToast(v.errors[0]); return; }
+  const m = matchById(category, matchId);
+  const lines = [];
+  if(v.swap) lines.push("Tukar "+schedMatchLabel(category,m)+" dengan "+schedMatchLabel(v.swap.occ.category, v.swap.match)+" ("+matchSideLabel(v.swap.occ.category, v.swap.match.sideA)+" vs "+matchSideLabel(v.swap.occ.category, v.swap.match.sideB)+").");
+  else lines.push("Pindahkan "+schedMatchLabel(category,m)+" ("+matchSideLabel(category,m.sideA)+" vs "+matchSideLabel(category,m.sideB)+") ke "+slotText(target)+".");
+  if(v.warnings.length) lines.push("Perhatian: "+v.warnings.join(" "));
+  openConfirm({ title: v.swap?"Tukar jadwal?":"Pindahkan jadwal?", body: lines.join(" "), confirmLabel: v.swap?"Tukar":"Pindahkan",
+    onConfirm: async ()=>{ const ok = await applyMove(category, matchId, target); if(ok){ schedMove = null; showToast("Jadwal diperbarui."); } render(); } });
+}
+function renderSchedMovePanel(){
+  const {category, matchId} = schedMove;
+  const m = matchById(category, matchId); const cur = scheduleFor(matchId);
+  const box = el("div",{class:"sched-panel"});
+  box.appendChild(el("div",{style:"font-weight:800;font-size:13.5px;"}, "Memindahkan "+schedMatchLabel(category,m)+": "+matchSideLabel(category,m.sideA)+" vs "+matchSideLabel(category,m.sideB)));
+  box.appendChild(el("div",{style:"font-size:12px;color:var(--ink-dim);margin:2px 0 8px;"}, (cur? "Sekarang: "+slotText(cur) : "Belum terjadwal")+". Ketuk slot tujuan di tabel: hijau = pindah ke slot kosong, kuning = tukar dengan match itu, redup = tidak bisa (urutan bagan atau bentrok)."));
+  const row = el("div",{style:"display:flex;flex-wrap:wrap;gap:8px;"});
+  [["first","Slot valid paling awal"],["last","Slot valid paling akhir"]].forEach(([w,label])=>{
+    row.appendChild(el("button",{class:"btn btn-outline btn-xs", onclick:()=>{
+      const b = bestMoveSlot(category, matchId, w);
+      if(!b){ showToast("Tidak ada slot valid yang tersedia."); return; }
+      confirmMove(category, matchId, b.t);
+    }}, label));
+  });
+  row.appendChild(el("button",{class:"btn btn-outline btn-xs", onclick:()=>{ moveMatchTarget={category, matchId}; render(); }},"Wasit & detail"));
+  row.appendChild(el("button",{class:"btn btn-danger btn-xs", onclick:()=>{ schedMove=null; render(); }},"Batal"));
+  box.appendChild(row);
+  return box;
+}
+function renderSchedLogCard(){
+  const card = el("div",{class:"card", style:"margin-top:14px;"});
+  card.appendChild(el("div",{style:"font-weight:800;font-size:13px;margin-bottom:6px;"},"Riwayat perubahan jadwal"));
+  if(!SCHEDULE_LOG.length){ card.appendChild(el("div",{style:"color:var(--ink-faint);font-size:12px;"},"Belum ada perubahan manual.")); return card; }
+  SCHEDULE_LOG.slice(0,10).forEach(l=>{
+    const t = new Date(l.at);
+    card.appendChild(el("div",{style:"font-size:12px;color:var(--ink-dim);padding:3px 0;border-top:1px solid var(--line);"}, String(t.getHours()).padStart(2,"0")+":"+String(t.getMinutes()).padStart(2,"0")+" · "+l.text));
+  });
+  return card;
+}
+
 function viewAdminSchedule(){
   const wrap = el("div",{});
   wrap.appendChild(topbar("admin"));
@@ -3458,6 +3621,8 @@ function viewAdminSchedule(){
   const legend = el("div",{class:"sched-legend"});
   META.categories.forEach(c=> legend.appendChild(el("span",{},[el("i",{style:"background:"+(SCHEDULE_CAT_COLORS[c.code]||"#888")+";"}), c.name+" ("+c.level+")"])));
   sec.appendChild(legend);
+  if(schedMove && (!matchById(schedMove.category, schedMove.matchId))) schedMove = null;
+  if(schedMove) sec.appendChild(renderSchedMovePanel());
 
   const dayTabs = el("div",{class:"tabs"});
   TOURNAMENT_DAYS.forEach(d=>{
@@ -3480,6 +3645,17 @@ function viewAdminSchedule(){
       const occ = scheduleOccupant(scheduleActiveDay, idx, court);
       const plan = SCHEDULE_PLAN_BY_CELL[scheduleActiveDay+"-"+idx+"-"+court];
       let cell;
+      const target = {day:scheduleActiveDay, timeIndex:idx, court};
+      let mvCls = "", mvClick = null;
+      if(schedMove){
+        const isSelf = occ && occ.matchId===schedMove.matchId;
+        if(isSelf){ mvCls = " mv-self"; mvClick = ()=>{ schedMove=null; render(); }; }
+        else {
+          const v = validateMove(schedMove.category, schedMove.matchId, target);
+          mvCls = v.ok ? (v.swap?" mv-swap":" mv-ok") : " mv-bad";
+          mvClick = ()=> confirmMove(schedMove.category, schedMove.matchId, target);
+        }
+      }
       if(occ){
         const m = matchById(occ.category, occ.matchId);
         const catShort = occ.category.slice(0,3);
@@ -3487,7 +3663,7 @@ function viewAdminSchedule(){
         const kids = [ el("div",{}, catShort+" "+(m? m.round+"#"+m.matchNo : "")) ];
         if(m) kids.push(el("div",{class:"sc-sub"}, matchSideLabel(occ.category,m.sideA)+" vs "+matchSideLabel(occ.category,m.sideB)));
         if(ref) kids.push(el("div",{class:"sc-ref"}, "\ud83d\udc64 "+ref));
-        cell = el("td",{},[el("div",{class:"sched-cell filled", style:"height:auto;min-height:44px;"+schedCatStyle(occ.category), onclick:()=>{ moveMatchTarget={category:occ.category, matchId:occ.matchId}; render(); }}, kids)]);
+        cell = el("td",{},[el("div",{class:"sched-cell filled"+mvCls, style:"height:auto;min-height:44px;"+schedCatStyle(occ.category), onclick: mvClick || (()=>{ schedMove={category:occ.category, matchId:occ.matchId}; render(); })}, kids)]);
       } else if(plan){
         const m = planMatchFor(plan);
         let note = "menunggu drawing";
@@ -3498,9 +3674,9 @@ function viewAdminSchedule(){
         }
         const kids = [ el("div",{}, plan.category.slice(0,3)+" "+plan.round+"#"+plan.matchNo), el("div",{class:"sc-sub"}, note) ];
         if(REF_DEFAULTS[court]) kids.push(el("div",{class:"sc-ref"}, "\ud83d\udc64 "+REF_DEFAULTS[court]));
-        cell = el("td",{},[el("div",{class:"sched-cell draft", style:"height:auto;min-height:44px;"+schedCatStyle(plan.category)+"opacity:.78;", }, kids)]);
+        cell = el("td",{},[el("div",{class:"sched-cell draft"+mvCls, style:"height:auto;min-height:44px;"+schedCatStyle(plan.category)+"opacity:.78;", onclick: mvClick||null }, kids)]);
       } else {
-        cell = el("td",{},[el("div",{class:"sched-cell empty"},"-")]);
+        cell = el("td",{},[el("div",{class:"sched-cell empty"+mvCls, onclick: mvClick||null},"-")]);
       }
       tr.appendChild(cell);
     });
@@ -3508,6 +3684,7 @@ function viewAdminSchedule(){
   }
   scrollWrap.appendChild(table);
   sec.appendChild(scrollWrap);
+  sec.appendChild(renderSchedLogCard());
   wrap.appendChild(sec);
   if(moveMatchTarget) wrap.appendChild(renderMoveMatchModal());
   return wrap;
@@ -3664,23 +3841,14 @@ function renderMoveMatchModal(){
   }
   actions.appendChild(el("button",{class:"btn btn-gold", onclick: async ()=>{
     errBox.innerHTML = "";
-    const occ = scheduleOccupant(selDay, selTime, selCourt);
-    if(occ && (!existing || occ.id!==existing.id)){
-      errBox.appendChild(el("div",{class:"flag"},"Slot ini sudah dipakai match lain."));
-      return;
-    }
-    const pids = [m.sideA.type==="participant"?m.sideA.participantId:null, m.sideB.type==="participant"?m.sideB.participantId:null].filter(Boolean);
-    for(const pid of pids){
-      const others = participantSchedulesOnDay(pid, selDay, existing? existing.id : null);
-      if(others.includes(selTime)){
-        errBox.appendChild(el("div",{class:"flag"},"Salah satu peserta sudah dijadwalkan pada jam yang sama."));
-        return;
-      }
-    }
+    const tgt = { day:selDay, timeIndex:selTime, court:selCourt };
+    const moved = !existing || existing.day!==tgt.day || existing.timeIndex!==tgt.timeIndex || existing.court!==tgt.court;
     let restWarning = false;
-    for(const pid of pids){
-      const others = participantSchedulesOnDay(pid, selDay, existing? existing.id : null);
-      if(others.some(t=>Math.abs(t-selTime)<=REST_MIN_GAP && t!==selTime)) restWarning = true;
+    if(moved){
+      const v = validateMove(category, matchId, tgt);
+      if(v.swap){ errBox.appendChild(el("div",{class:"flag"},"Slot ini dipakai match lain. Untuk menukar jadwal, tutup jendela ini, ketuk match, lalu ketuk slot tujuan di tabel.")); return; }
+      if(!v.ok){ v.errors.forEach(e=>errBox.appendChild(el("div",{class:"flag"}, e))); return; }
+      restWarning = v.warnings.length>0;
     }
     if(existing){
       existing.day=selDay; existing.timeIndex=selTime; existing.court=selCourt;
