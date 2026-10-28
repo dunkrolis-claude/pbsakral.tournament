@@ -1878,6 +1878,7 @@ function renderRegistrationStatusCard(reg){
     s2.appendChild(el("div",{class:"flag info", style:"margin-top:12px;"},"Bukti pembayaran sudah diterima. Menunggu verifikasi panitia."));
   } else if(reg.status==="REGISTERED"){
     s2.appendChild(renderParticipantMatchCards(reg));
+    const c2 = adminSession ? (function(){
     const c2 = el("div",{class:"card", style:"margin-top:12px;"});
     c2.appendChild(el("div",{style:"font-weight:800;font-size:13.5px;margin-bottom:8px;"},"\ud83e\uddfe Rincian Biaya"));
     c2.appendChild(el("div",{class:"kv"},[el("span",{class:"k"},"Biaya Registrasi"),el("span",{class:"v"},rupiah(reg.payment.amountPaid)+" \u2713 Lunas")]));
@@ -1893,6 +1894,8 @@ function renderRegistrationStatusCard(reg){
     } else {
       c2.appendChild(el("div",{class:"kv"},[el("span",{class:"k"},"Deposit Kok"),el("span",{class:"v"},"Rp"+DEPOSIT_FEE.toLocaleString("id-ID")+" tunai saat hari-H")]));
     }
+      return c2;
+    })() : renderMoneyCard(reg);
     s2.appendChild(c2);
     s2.appendChild(el("button",{class:"btn btn-outline btn-block", style:"margin-top:12px;", onclick:()=>{ publicLiveCat = reg.category; publicLiveTab="bagan"; nav("public-live"); }},"Lihat Bagan Lengkap Kategori Ini"));
   } else if(reg.status==="CANCELLED"){
@@ -5776,6 +5779,66 @@ function render(){
     pendingBracketDraw = null;
     (window.requestAnimationFrame || window.setTimeout)(drawFn, 0);
   }
+}
+
+/* ============ RINCIAN BIAYA PEMAIN (dari /api/player-money, disimpan untuk offline) ============ */
+const MONEY_KEY = "pbs_money_v1";
+let MONEY = {};   // regNo -> { t, d, stale, loading }
+function moneyFromStore(regNo){
+  try{ const m = JSON.parse(localStorage.getItem(MONEY_KEY)||"{}"); return m[regNo] || null; }catch(e){ return null; }
+}
+function moneyToStore(regNo, entry){
+  try{ const m = JSON.parse(localStorage.getItem(MONEY_KEY)||"{}"); m[regNo] = entry; localStorage.setItem(MONEY_KEY, JSON.stringify(m)); }catch(e){}
+}
+async function fetchMoney(regNo){
+  const cur = MONEY[regNo];
+  if(cur && cur.loading) return;
+  const prev = cur || moneyFromStore(regNo);
+  MONEY[regNo] = Object.assign({}, prev||{}, { loading:true });
+  try{
+    const r = await withTimeout(fetch("/api/player-money?code="+encodeURIComponent(regNo)), 8000);
+    const j = await r.json();
+    if(!r.ok || !j.ok) throw new Error("bad");
+    MONEY[regNo] = { t: Date.now(), d: j.data, stale:false };
+    moneyToStore(regNo, { t: MONEY[regNo].t, d: j.data });
+  }catch(e){
+    MONEY[regNo] = prev && prev.d ? { t: prev.t, d: prev.d, stale:true } : { failed:true };
+  }
+  if(route && route.name==="status") render();
+}
+function renderMoneyCard(reg){
+  const c = el("div",{class:"card", style:"margin-top:12px;"});
+  c.appendChild(el("div",{style:"font-weight:800;font-size:13.5px;margin-bottom:8px;"},"\ud83e\uddfe Rincian Biaya"));
+  const regNo = reg.regNo;
+  let m = MONEY[regNo];
+  if(!m){ const st = moneyFromStore(regNo); if(st) m = MONEY[regNo] = { t: st.t, d: st.d, stale:true }; }
+  if(!m || (!m.loading && !m.failed && Date.now()-m.t > 60000)) fetchMoney(regNo);
+  if(!m || (!m.d && m.loading)){ c.appendChild(el("div",{style:"font-size:12.5px;color:var(--ink-faint);"},"Memuat rincian biaya\u2026")); return c; }
+  if(!m.d){
+    c.appendChild(el("div",{class:"flag"},"Rincian biaya belum bisa dimuat (sinyal bermasalah). Tanyakan ke meja registrasi panitia."));
+    c.appendChild(el("button",{class:"btn btn-outline btn-block", style:"margin-top:8px;", onclick:()=>{ delete MONEY[regNo]; render(); }},"Coba lagi"));
+    return c;
+  }
+  const d = m.d;
+  const short = Math.max(0, (d.amountDue||0) - (d.amountPaid||0));
+  const kv = (k,v,style)=>c.appendChild(el("div",{class:"kv"},[el("span",{class:"k"},k),el("span",{class:"v", style:style||""},v)]));
+  kv("Biaya Registrasi", rupiah(d.amountDue||0));
+  if(d.discountAmount>0) kv("Termasuk potongan", "\u2212 "+rupiah(d.discountAmount));
+  kv("Sudah dibayar", rupiah(d.amountPaid||0)+(short===0?" \u2713 Lunas":""), short===0?"color:var(--ok);":"");
+  let owed = short;
+  if(d.depositInitial || d.depositBalance){
+    kv("Deposit Kok (masuk)", rupiah((d.depositInitial||0)+(d.topups||0)));
+    kv("Pemakaian Kok", "\u2212 "+rupiah(d.kokUsage||0), "color:var(--warn);");
+    kv("Sisa Deposit", rupiah(d.depositBalance||0), (d.depositBalance||0)<0?"color:var(--danger);":"color:var(--ok);");
+    if((d.depositBalance||0)<0) owed += Math.abs(d.depositBalance);
+  } else {
+    kv("Deposit Kok", "Rp"+DEPOSIT_FEE.toLocaleString("id-ID")+" tunai saat hari-H");
+    owed += DEPOSIT_FEE;
+  }
+  c.appendChild(el("div",{class:"kv", style:"border-top:1px solid var(--line,#2a2a2a);margin-top:6px;padding-top:6px;"},[el("span",{class:"k", style:"font-weight:800;"},"Sisa yang perlu dibayar"),el("span",{class:"v", style:"font-weight:800;"+(owed>0?"color:var(--warn);":"color:var(--ok);")}, rupiah(owed))]));
+  if(m.stale) c.appendChild(el("div",{style:"font-size:11px;color:var(--ink-faint);margin-top:6px;"},"Data terakhir "+hhmm(m.t)+" \u2014 belum bisa diperbarui (sinyal)."));
+  else c.appendChild(el("div",{style:"font-size:11px;color:var(--ink-faint);margin-top:6px;"},"Diperbarui "+hhmm(m.t)+". Jika ada selisih, konfirmasi ke panitia."));
+  return c;
 }
 
 /* ============ ADMIN: LINK & QR PEMAIN, KIRIM JADWAL WA ============ */
