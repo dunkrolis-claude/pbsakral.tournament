@@ -370,6 +370,11 @@ module.exports = async function handler(req, res) {
         "categories", "registration_open", "whatsapp_enabled",
         "public_results_visible", "scoring_target", "referee_names",
       ]);
+      if (payload.day_start_minutes !== undefined) {
+        const d = payload.day_start_minutes, ok = (v) => Number.isInteger(v) && v >= 0 && v <= 1439;
+        if (!d || typeof d !== "object" || !ok(d[1]) || !ok(d[2])) return sendJson(res, 400, { ok: false, error: "invalid_day_start" });
+        allowed.day_start_minutes = { 1: d[1], 2: d[2] };
+      }
       allowed.updated_at = nowIso();
       const { data, error } = await supabase
         .from("tournament_settings").update(allowed).eq("id", 1).select().single();

@@ -618,8 +618,9 @@ const TOURNAMENT_DAYS = [
 const SLOTS_PER_DAY = 27; // 08:00 to 21:30, 30-minute slots
 const COURTS = ["A","B","C","D","E"];
 const REST_MIN_GAP = 1; // minimum empty slots between a participant's matches
-function timeLabel(idx){
-  const totalMin = 8*60 + idx*30;
+let DAY_START_MIN = {1:480, 2:480}; // jam mulai tiap hari (menit sejak 00.00); default 08.00, bisa diatur Super Admin
+function timeLabel(idx, day){
+  const totalMin = (DAY_START_MIN[day] ?? 480) + idx*30;
   const h = Math.floor(totalMin/60), m = totalMin%60;
   return String(h).padStart(2,"0")+":"+String(m).padStart(2,"0");
 }
@@ -739,11 +740,16 @@ function applyMetaRow(data){
         scoringTarget: data.scoring_target ?? 42,
         refereeNames: data.referee_names || [],
         publicResultsVisible: data.public_results_visible ?? false,
+        dayStartSupported: Object.prototype.hasOwnProperty.call(data, "day_start_minutes"),
         // NOTE: adminPin / categoryPins no longer exist client-side.
         // Credentials live only in admin_credentials (server/service_role only).
       },
     };
   } else { META = defaultMeta(); }
+  const dsm = (data && data.day_start_minutes) || {};
+  const okMin = (v)=> Number.isInteger(v) && v>=0 && v<=1439;
+  DAY_START_MIN = { 1: okMin(dsm[1]) ? dsm[1] : 480, 2: okMin(dsm[2]) ? dsm[2] : 480 };
+  META.settings.dayStartMinutes = Object.assign({}, DAY_START_MIN);
   META.categories.forEach(c=>{
     if(c.prize===undefined){ const dc = d.categories.find(x=>x.code===c.code); c.prize = dc? dc.prize : 0; }
     if(c.bankName===undefined) c.bankName="";
@@ -761,14 +767,17 @@ async function loadMeta(){
 async function saveMeta(){
   // Only SUPER can reach the Settings UI that calls this; server re-checks scope anyway.
   try{
-    await apiMutate("SAVE_SETTINGS", {
+    const body = {
       categories: META.categories,
       registration_open: META.settings.registrationOpen,
       whatsapp_enabled: META.settings.whatsappEnabled,
       scoring_target: META.settings.scoringTarget,
       referee_names: META.settings.refereeNames,
       public_results_visible: META.settings.publicResultsVisible,
-    });
+    };
+    // Hanya dikirim bila kolomnya sudah ada di database (setelah migrasi), supaya penyimpanan lain tidak gagal.
+    if(META.settings.dayStartSupported) body.day_start_minutes = { 1: DAY_START_MIN[1], 2: DAY_START_MIN[2] };
+    await apiMutate("SAVE_SETTINGS", body);
     return true;
   }catch(e){ console.error(e); showToast("Gagal menyimpan pengaturan."); return false; }
 }
@@ -1271,7 +1280,7 @@ function buildMessageBase(type, reg, extra){
       const {m, sched} = upcoming;
       const day = TOURNAMENT_DAYS.find(d=>d.day===sched.day);
       const opponent = opponentLabelFor(reg.category, m, reg.id);
-      return `Halo ${pairName},\n\nBerikut jadwal pertandingan kamu:\n\nKategori: ${cat.name}\nBabak: ${ROUND_LABELS[m.round]} #${m.matchNo}\nLawan: ${opponent}\nHari/Tanggal: ${day?day.label:"-"}\nJam: ${timeLabel(sched.timeIndex)}\nLapangan: ${sched.court}\n\nMohon hadir 30 menit sebelum jadwal untuk registrasi ulang di lokasi.\n\nCek jadwal & hasil terbaru: ${statusLink}`;
+      return `Halo ${pairName},\n\nBerikut jadwal pertandingan kamu:\n\nKategori: ${cat.name}\nBabak: ${ROUND_LABELS[m.round]} #${m.matchNo}\nLawan: ${opponent}\nHari/Tanggal: ${day?day.label:"-"}\nJam: ${timeLabel(sched.timeIndex, sched.day)}\nLapangan: ${sched.court}\n\nMohon hadir 30 menit sebelum jadwal untuk registrasi ulang di lokasi.\n\nCek jadwal & hasil terbaru: ${statusLink}`;
     }
     case "DATA_REVISION_REQUESTED":
       return `Panitia memerlukan kelengkapan data tambahan untuk pendaftaran ${displayCode(reg.regNo)}: ${extra.note||reg.adminNote||"-"}\nSilakan lengkapi melalui: ${statusLink}`;
@@ -1885,7 +1894,7 @@ function renderParticipantMatchCards(reg){
     upCard.appendChild(el("div",{class:"kv"},[el("span",{class:"k"},"Lawan"),el("span",{class:"v"},opponentLabelFor(reg.category, m, reg.id))]));
     if(sched){
       const day = TOURNAMENT_DAYS.find(d=>d.day===sched.day);
-      upCard.appendChild(el("div",{class:"kv"},[el("span",{class:"k"},"Hari/Jam"),el("span",{class:"v"},(day?day.label:"")+" \u00b7 "+timeLabel(sched.timeIndex))]));
+      upCard.appendChild(el("div",{class:"kv"},[el("span",{class:"k"},"Hari/Jam"),el("span",{class:"v"},(day?day.label:"")+" \u00b7 "+timeLabel(sched.timeIndex, sched.day))]));
       upCard.appendChild(el("div",{class:"kv"},[el("span",{class:"k"},"Court"),el("span",{class:"v"},"Lapangan "+sched.court)]));
     } else {
       upCard.appendChild(el("div",{class:"kv"},[el("span",{class:"k"},"Jadwal"),el("span",{class:"v"},"Menunggu diatur panitia")]));
@@ -2297,7 +2306,7 @@ function renderPublicJadwal(){
     const occAny = COURTS.some(c=>{ const o = scheduleOccupant(publicLiveDay, idx, c); return o && (publicJadwalCat==="ALL" || o.category===publicJadwalCat); });
     if(!occAny) continue;
     const tr = el("tr",{});
-    tr.appendChild(el("td",{class:"sched-time"}, timeLabel(idx)));
+    tr.appendChild(el("td",{class:"sched-time"}, timeLabel(idx, publicLiveDay)));
     COURTS.forEach(court=>{
       let occ = scheduleOccupant(publicLiveDay, idx, court);
       if(occ && publicJadwalCat!=="ALL" && occ.category!==publicJadwalCat) occ = null;
@@ -3523,7 +3532,7 @@ function viewAdminBracket(){
       const rightTop = el("div",{style:"display:flex;gap:6px;align-items:center;"});
       if(m.status) rightTop.appendChild(mcStatusBadge(m.status));
       rightTop.appendChild(el("button",{class:"btn btn-outline btn-xs", onclick:()=>{ moveMatchTarget={category:cat.code, matchId:m.id}; render(); }},
-        sched ? "Jadwal: "+ (TOURNAMENT_DAYS.find(d=>d.day===sched.day)||{}).label?.split(",")[0] + " " + timeLabel(sched.timeIndex)+" Lap"+sched.court : "Atur Jadwal"));
+        sched ? "Jadwal: "+ (TOURNAMENT_DAYS.find(d=>d.day===sched.day)||{}).label?.split(",")[0] + " " + timeLabel(sched.timeIndex, sched.day)+" Lap"+sched.court : "Atur Jadwal"));
       top.appendChild(rightTop);
       row.appendChild(top);
       const isWinnerA = m.winnerParticipantId && m.sideA.type==="participant" && m.sideA.participantId===m.winnerParticipantId;
@@ -3578,7 +3587,7 @@ let schedMove = null;          // {category, matchId} match yang sedang dipilih 
 let SCHEDULE_LOG = [];         // riwayat perubahan (disimpan di schedule.data.log, maks 100)
 const MOVE_LOCKED = ["ON_COURT","CALLING","FINISHED","WO","CANCELLED"];
 function slotOrder(p){ return p.day*1000 + p.timeIndex; }
-function slotText(p){ return "Hari "+p.day+" "+timeLabel(p.timeIndex)+" Lap "+p.court; }
+function slotText(p){ return "Hari "+p.day+" "+timeLabel(p.timeIndex, p.day)+" Lap "+p.court; }
 function feedersOf(m){
   const out = [];
   [m.sideA, m.sideB].forEach(s=>{ if(!s) return; if(s.type==="winnerOf" && s.matchId) out.push(s.matchId); else if(s.resolvedFrom) out.push(s.resolvedFrom); });
@@ -3736,7 +3745,7 @@ function viewAdminSchedule(){
   sec.appendChild(adminTabs("admin-schedule"));
   sec.appendChild(el("div",{class:"section-title"},"Jadwal "+COURTS.length+" Lapangan"));
   sec.appendChild(el("div",{style:"color:var(--ink-dim);font-size:12px;margin-bottom:12px;"},
-    "Kerangka jadwal mengikuti template RAB (08:00\u201321:30). Kotak putus-putus = slot rencana; nama peserta terisi otomatis setelah drawing di-lock dan template diterapkan. Ketuk kotak yang sudah terisi untuk menggeser match atau mengganti wasit."));
+    "Kerangka jadwal mengikuti template RAB (slot 30 menit; jam mulai tiap hari diatur di Pengaturan). Kotak putus-putus = slot rencana; nama peserta terisi otomatis setelah drawing di-lock dan template diterapkan. Ketuk kotak yang sudah terisi untuk menggeser match atau mengganti wasit."));
 
   sec.appendChild(renderRefereeDefaultsCard());
 
@@ -3771,7 +3780,7 @@ function viewAdminSchedule(){
   table.appendChild(thead);
   for(let idx=0; idx<SLOTS_PER_DAY; idx++){
     const tr = el("tr",{});
-    tr.appendChild(el("td",{class:"sched-time"}, timeLabel(idx)));
+    tr.appendChild(el("td",{class:"sched-time"}, timeLabel(idx, scheduleActiveDay)));
     COURTS.forEach(court=>{
       const occ = scheduleOccupant(scheduleActiveDay, idx, court);
       const plan = SCHEDULE_PLAN_BY_CELL[scheduleActiveDay+"-"+idx+"-"+court];
@@ -3923,14 +3932,15 @@ function renderMoveMatchModal(){
   dayField.appendChild(el("label",{},"Hari"));
   const daySel = el("select",{});
   TOURNAMENT_DAYS.forEach(d=> daySel.appendChild(el("option",{value:d.day, selected: d.day===selDay?"selected":null}, d.label)));
-  daySel.addEventListener("change",(e)=>{ selDay=Number(e.target.value); });
+  daySel.addEventListener("change",(e)=>{ selDay=Number(e.target.value); if(typeof fillTimes==="function") fillTimes(); });
   dayField.appendChild(daySel);
   modal.appendChild(dayField);
 
   const timeField = el("div",{class:"field"});
   timeField.appendChild(el("label",{},"Jam"));
   const timeSel = el("select",{});
-  for(let i=0;i<SLOTS_PER_DAY;i++){ timeSel.appendChild(el("option",{value:i, selected:i===selTime?"selected":null}, timeLabel(i))); }
+  const fillTimes = ()=>{ timeSel.innerHTML=""; for(let i=0;i<SLOTS_PER_DAY;i++){ timeSel.appendChild(el("option",{value:i, selected:i===selTime?"selected":null}, timeLabel(i, selDay))); } };
+  fillTimes();
   timeSel.addEventListener("change",(e)=>{ selTime=Number(e.target.value); });
   timeField.appendChild(timeSel);
   modal.appendChild(timeField);
@@ -4095,7 +4105,7 @@ function viewAdminMatchControl(){
     const cat = catByCode(match.category);
     const card = el("div",{class:"mc-card"});
     const top = el("div",{class:"mc-top"});
-    top.appendChild(el("div",{class:"mc-meta"}, timeLabel(sched.timeIndex)+" \u00b7 Lap "+sched.court+" \u00b7 "+cat.name+" "+ROUND_LABELS[match.round]+" #"+match.matchNo+(effectiveReferee(match)?" \u00b7 Wasit: "+effectiveReferee(match):"")));
+    top.appendChild(el("div",{class:"mc-meta"}, timeLabel(sched.timeIndex, sched.day)+" \u00b7 Lap "+sched.court+" \u00b7 "+cat.name+" "+ROUND_LABELS[match.round]+" #"+match.matchNo+(effectiveReferee(match)?" \u00b7 Wasit: "+effectiveReferee(match):"")));
     top.appendChild(mcStatusBadge(match.status));
     card.appendChild(top);
 
@@ -4827,7 +4837,7 @@ function viewAdminReferee(){
       nav(match.liveScoring ? "admin-referee-scoring" : "admin-referee-setup", refTarget);
     }});
     const left = el("div",{});
-    left.appendChild(el("div",{style:"font-size:11px;color:var(--ink-faint);font-weight:700;"}, timeLabel(sched.timeIndex)+" \u00b7 Lap "+sched.court));
+    left.appendChild(el("div",{style:"font-size:11px;color:var(--ink-faint);font-weight:700;"}, timeLabel(sched.timeIndex, sched.day)+" \u00b7 Lap "+sched.court));
     left.appendChild(el("div",{style:"font-weight:700;font-size:13.5px;margin-top:2px;"}, cat.name+" "+ROUND_LABELS[match.round]+" #"+match.matchNo));
     left.appendChild(el("div",{style:"font-size:12px;color:var(--ink-dim);margin-top:2px;"}, matchSideLabel(match.category,match.sideA)+" vs "+matchSideLabel(match.category,match.sideB)));
     topRow.appendChild(left);
@@ -5132,7 +5142,7 @@ function viewReferee(){
     if(e.day!==lastDay){ lastDay = e.day; sec.appendChild(el("div",{class:"section-title", style:"margin-top:14px;"}, (TOURNAMENT_DAYS.find(d=>d.day===e.day)||{}).label || "Hari "+e.day)); }
     const color = SCHEDULE_CAT_COLORS[e.category] || "#888";
     const card = el("div",{class:"card", style:"border-left:4px solid "+color+";margin-bottom:10px;"});
-    card.appendChild(el("div",{style:"font-size:12px;color:var(--ink-dim);margin-bottom:4px;"}, timeLabel(e.timeIndex)+" · Lap "+e.court+" · "+catByCode(e.category).name+" · "+(ROUND_LABELS[m.round]||m.round)+" #"+m.matchNo));
+    card.appendChild(el("div",{style:"font-size:12px;color:var(--ink-dim);margin-bottom:4px;"}, timeLabel(e.timeIndex, e.day)+" · Lap "+e.court+" · "+catByCode(e.category).name+" · "+(ROUND_LABELS[m.round]||m.round)+" #"+m.matchNo));
     const finished = m.status==="FINISHED" || m.status==="WO";
     card.appendChild(el("div",{style:"font-weight:700;font-size:14px;line-height:1.4;"}, [refSideName(m,"sideA"), el("span",{style:"color:var(--ink-faint);font-weight:400;"}," vs "), refSideName(m,"sideB")]));
     if(finished) card.appendChild(el("div",{style:"margin-top:6px;color:var(--gold-bright);font-weight:700;"}, m.status==="WO" ? "WO" : "Selesai "+m.scoreA+" – "+m.scoreB));
@@ -5326,7 +5336,7 @@ function tvCourtRow(court){
   const m = pick.m;
   const meta = el("div",{class:"tv-meta"},[
     el("b",{style:"color:"+color+";"}, catByCode(m.category).name),
-    el("span",{}, "  "+(TV_ROUND_SHORT[m.round]||m.round)+"  "+timeLabel(pick.s.timeIndex))
+    el("span",{}, "  "+(TV_ROUND_SHORT[m.round]||m.round)+"  "+timeLabel(pick.s.timeIndex, pick.s.day))
   ]);
   const ls = live && m.liveScoring ? m.liveScoring : null;
   if(ls) meta.appendChild(el("span",{class:"tv-set"}, refSetLabel(ls)));
@@ -5360,7 +5370,7 @@ function tvSlideNext(){
     const it = el("div",{class:"tv-nrow"},[ el("div",{class:"tv-nlap", style:"background:"+col+";"}, c) ]);
     const txt = el("div",{class:"tv-ntxt"});
     if(!q.length) txt.appendChild(el("div",{class:"dim"},"Belum ada jadwal"));
-    q.forEach(x=> txt.appendChild(el("div",{class:"tv-nitem"},[ el("b",{}, timeLabel(x.s.timeIndex)+"  "), (TV_ROUND_SHORT[x.m.round]||x.m.round)+"  ", el("span",{class:"dim"}, tvPairName(x.m,"sideA")+" vs "+tvPairName(x.m,"sideB")) ])));
+    q.forEach(x=> txt.appendChild(el("div",{class:"tv-nitem"},[ el("b",{}, timeLabel(x.s.timeIndex, x.s.day)+"  "), (TV_ROUND_SHORT[x.m.round]||x.m.round)+"  ", el("span",{class:"dim"}, tvPairName(x.m,"sideA")+" vs "+tvPairName(x.m,"sideB")) ])));
     it.appendChild(txt); list.appendChild(it);
   });
   return tvPanel("Pertandingan berikutnya", null, list);
@@ -5832,6 +5842,33 @@ function viewAdminSettings(){
   cardWa.appendChild(toggleRow);
   cardWa.appendChild(el("div",{class:"flag info"},"Pengiriman WhatsApp di sini bersifat manual (membuka wa.me dengan pesan siap kirim) karena kredensial WhatsApp Business API perlu disimpan di server, bukan di aplikasi sisi klien ini — sesuai ketentuan addendum bahwa credential tidak boleh ditanam di source code."));
   sec.appendChild(cardWa);
+
+  sec.appendChild(el("div",{class:"section-title", style:"margin-top:20px;"},"Jam Mulai Pertandingan"));
+  const startCard = el("div",{class:"card"});
+  startCard.appendChild(el("div",{style:"font-size:11.5px;color:var(--ink-faint);margin-bottom:10px;"},"Atur sesuai saat pertandingan pertama benar-benar mulai. Semua jam di grid jadwal, LED, halaman pemain, dan pesan WhatsApp ikut bergeser; tiap slot tetap 30 menit. Urutan bagan tidak berubah."));
+  const fmtHm = (m)=> String(Math.floor(m/60)).padStart(2,"0")+":"+String(m%60).padStart(2,"0");
+  const startInputs = {};
+  TOURNAMENT_DAYS.forEach(d=>{
+    const f = el("div",{class:"field"}); f.appendChild(el("label",{}, d.label.split(",")[0]+" \u00b7 jam mulai"));
+    const inp = el("input",{type:"time", value: fmtHm(DAY_START_MIN[d.day]), step:"300"}); startInputs[d.day] = inp;
+    f.appendChild(inp); startCard.appendChild(f);
+  });
+  const startErr = el("div",{}); startCard.appendChild(startErr);
+  startCard.appendChild(el("button",{class:"btn btn-gold btn-block", onclick: async ()=>{
+    startErr.innerHTML = "";
+    if(!META.settings.dayStartSupported){ startErr.appendChild(el("div",{class:"flag"},"Fitur ini aktif setelah database diperbarui (migrasi belum dijalankan).")); return; }
+    const next = {};
+    for(const d of TOURNAMENT_DAYS){
+      const m = /^(\d{2}):(\d{2})$/.exec(startInputs[d.day].value||"");
+      if(!m){ startErr.appendChild(el("div",{class:"flag"},"Isi jam mulai "+d.label.split(",")[0]+".")); return; }
+      next[d.day] = Number(m[1])*60+Number(m[2]);
+    }
+    const prev = Object.assign({}, DAY_START_MIN);
+    DAY_START_MIN = Object.assign({}, DAY_START_MIN, next); META.settings.dayStartMinutes = Object.assign({}, DAY_START_MIN);
+    if(await saveMeta()){ showToast("Jam mulai disimpan. Semua jadwal ikut bergeser."); } else { DAY_START_MIN = prev; META.settings.dayStartMinutes = Object.assign({}, prev); }
+    render();
+  }},"Simpan Jam Mulai"));
+  sec.appendChild(startCard);
 
   sec.appendChild(el("div",{class:"section-title", style:"margin-top:20px;"},"Publikasi Bagan & Jadwal"));
   const pubCard = el("div",{class:"card"});
