@@ -1328,6 +1328,8 @@ function el(tag, attrs={}, children=[]){
     else if(k==="html") e.innerHTML = attrs[k];
     else if(k.startsWith("on") && typeof attrs[k]==="function") e.addEventListener(k.slice(2), attrs[k]);
     else if(k==="style") e.setAttribute("style", attrs[k]);
+    else if(attrs[k]===false || attrs[k]===null || attrs[k]===undefined) continue; // atribut boolean "mati": jangan dipasang (disabled:false sebelumnya tetap menonaktifkan tombol)
+    else if(attrs[k]===true) e.setAttribute(k, "");
     else e.setAttribute(k, attrs[k]);
   }
   (Array.isArray(children)?children:[children]).forEach(c=>{
