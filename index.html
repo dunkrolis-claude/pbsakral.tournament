@@ -3278,6 +3278,7 @@ function viewAdminParticipants(){
       code==="ALL"?"Semua Kategori":catByCode(code).name));
   });
   sec.appendChild(catTabs);
+  sec.appendChild(el("div",{style:"margin:0 0 10px;"}, downloadButton(participantsActiveCat)));
   const items = INDEX.filter(r=>r.status==="REGISTERED" && (participantsActiveCat==="ALL" || r.category===participantsActiveCat)).sort((a,b)=>a.regNo.localeCompare(b.regNo));
   if(items.length===0){
     sec.appendChild(el("div",{class:"empty"},"Belum ada peserta resmi."));
@@ -3296,6 +3297,32 @@ function viewAdminParticipants(){
   }
   wrap.appendChild(sec);
   return wrap;
+}
+
+/* Unduh data peserta resmi (REGISTERED) sebagai CSV untuk pengundian. catCode "ALL" = semua kategori. */
+function participantsCsv(catCode){
+  const esc = (v)=>{ v = String(v==null?"":v); return /[",\n\r;]/.test(v) ? '"'+v.replace(/"/g,'""')+'"' : v; };
+  const rows = INDEX.filter(r=>r.status==="REGISTERED" && (catCode==="ALL" || r.category===catCode))
+    .sort((a,b)=> String(a.category).localeCompare(String(b.category)) || String(a.regNo).localeCompare(String(b.regNo)));
+  const lines = [["No","Kategori","Kode Daftar","Pemain 1","Pemain 2","Klub","No Undian (isi manual)"].map(esc).join(",")];
+  let n = 0, last = null;
+  rows.forEach(r=>{ if(r.category!==last){ n = 0; last = r.category; } n++; lines.push([n, catByCode(r.category).name, displayCode(r.regNo), r.player1, r.player2, r.club, ""].map(esc).join(",")); });
+  return { csv: "\ufeff"+lines.join("\r\n")+"\r\n", count: rows.length };
+}
+function downloadParticipants(catCode){
+  const { csv, count } = participantsCsv(catCode);
+  if(!count){ showToast("Belum ada peserta resmi untuk diunduh."); return; }
+  const blob = new Blob([csv], {type:"text/csv;charset=utf-8"});
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url; a.download = "peserta-"+(catCode==="ALL"?"semua":catCode.toLowerCase())+"-"+nowIso().slice(0,10)+".csv";
+  document.body.appendChild(a); a.click(); document.body.removeChild(a);
+  setTimeout(()=>URL.revokeObjectURL(url), 1000);
+  showToast(count+" peserta diunduh.");
+}
+function downloadButton(catCode){
+  const n = INDEX.filter(r=>r.status==="REGISTERED" && (catCode==="ALL" || r.category===catCode)).length;
+  return el("button",{class:"btn btn-outline btn-sm", onclick:()=>downloadParticipants(catCode)}, "Unduh Data Peserta (CSV) \u00b7 "+n);
 }
 
 /* ============ ADMIN: DRAWING (Phase 2) ============ */
@@ -3319,6 +3346,7 @@ function viewAdminDrawing(){
   const pool = registeredPoolFor(cat.code);
   const filled = drawing.slots.filter(Boolean).length;
 
+  sec.appendChild(el("div",{style:"margin:0 0 10px;"}, downloadButton(cat.code)));
   const headCard = el("div",{class:"card"});
   const headRow = el("div",{style:"display:flex;justify-content:space-between;align-items:center;"});
   headRow.appendChild(el("div",{},[
