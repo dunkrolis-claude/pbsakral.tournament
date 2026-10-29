@@ -1756,6 +1756,7 @@ function lookupStatusByRegNo(no){
 function viewStatus(params){
   if(params && params.regNo){
     statusLookupValue = params.regNo;
+    statusViaClub = false; statusChoicesViaClub = false;
     statusFoundId = lookupStatusByRegNo(params.regNo);
     params.regNo = null; // consume so later re-renders on this route don't reset the result
   }
@@ -1808,11 +1809,22 @@ let statusPhoneMsg = "";
 const MY_CHOICES_KEY = "pbs_my_choices";
 function looksLikePhone(q){ return /^(0|62)\d{8,13}$/.test(String(q||"").replace(/[\s\-+().]/g,"")); }
 function savedChoices(){ try{ return JSON.parse(localStorage.getItem(MY_CHOICES_KEY)||"[]"); }catch(e){ return []; } }
-function chooseCouple(regNo){
-  statusChoices = null; statusPhoneMsg = "";
+let statusViaClub = false; // hasil dari pencarian nama PB: tampilkan jadwal saja, tanpa rincian biaya
+let statusChoicesViaClub = false;
+function chooseCouple(regNo, viaClub){
+  statusChoices = null; statusPhoneMsg = ""; statusViaClub = !!viaClub;
   statusLookupValue = regNo;
   statusFoundId = lookupStatusByRegNo(regNo);
   render();
+}
+/* Cari berdasarkan nama PB/klub: tidak perlu lengkap; semua kata yang diketik harus ada di nama PB (tanpa membedakan huruf besar/kecil). */
+function normClub(t){ return String(t||"").toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g,"").replace(/[^a-z0-9 ]+/g," ").replace(/\s+/g," ").trim(); }
+function searchByClub(q){
+  const words = normClub(q).split(" ").filter(Boolean);
+  if(!words.length || normClub(q).replace(/ /g,"").length < 3) return { tooShort:true, list:[] };
+  const list = INDEX.filter(r=> r.regNo && r.status==="REGISTERED" && r.club && (function(c){ return words.every(w=>c.includes(w)); })(normClub(r.club)))
+    .sort((a,b)=> String(a.club).localeCompare(String(b.club)) || String(a.player1).localeCompare(String(b.player1)));
+  return { tooShort:false, list };
 }
 async function lookupByPhone(q){
   statusFoundId = null; statusChoices = null; statusPhoneMsg = ""; statusPhoneBusy = true; render();
@@ -1835,20 +1847,28 @@ async function lookupByPhone(q){
 }
 function doStatusLookup(){
   statusChoices = null; statusPhoneMsg = "";
+  statusViaClub = false; statusChoicesViaClub = false;
   if(looksLikePhone(statusLookupValue)){ lookupByPhone(statusLookupValue); return; }
-  statusFoundId = lookupStatusByRegNo(statusLookupValue);
+  const exact = findSummaryByNo(statusLookupValue);
+  if(exact){ statusFoundId = exact.id; render(); return; }
+  const { tooShort, list } = searchByClub(statusLookupValue);
+  if(tooShort){ statusFoundId = "notfound"; if(String(statusLookupValue||"").trim()) statusPhoneMsg = "Tulis minimal 3 huruf nama PB, atau pakai kode booking / nomor HP."; render(); return; }
+  if(list.length===0){ statusFoundId = "notfound"; }
+  else if(list.length===1){ statusViaClub = true; statusFoundId = list[0].id; }
+  else if(list.length>25){ statusFoundId = null; statusPhoneMsg = "Ada "+list.length+" pasangan yang cocok. Tulis nama PB lebih lengkap, atau pakai kode booking / nomor HP."; }
+  else { statusChoices = list.map(r=>({ regNo:r.regNo, player1:r.player1, player2:r.player2, category:r.category, club:r.club })); statusChoicesViaClub = true; }
   render();
 }
 function renderCoupleChooser(list){
   const s2 = el("div",{class:"section", style:"padding-top:0;"});
-  s2.appendChild(el("div",{style:"font-weight:800;font-size:14px;margin-bottom:4px;"},"Nomor ini terdaftar untuk "+list.length+" pasangan"));
+  s2.appendChild(el("div",{style:"font-weight:800;font-size:14px;margin-bottom:4px;"}, statusChoicesViaClub ? list.length+" pasangan cocok dengan nama PB itu" : "Nomor ini terdaftar untuk "+list.length+" pasangan"));
   s2.appendChild(el("div",{style:"font-size:12.5px;color:var(--ink-dim);margin-bottom:10px;"},"Pilih pasanganmu:"));
   list.forEach(c=>{
     const cat = catByCode(c.category);
-    s2.appendChild(el("button",{class:"card", style:"display:block;width:100%;text-align:left;margin-bottom:10px;cursor:pointer;color:var(--ink,#f4f1e8);font:inherit;", onclick:()=>chooseCouple(c.regNo)},[
+    s2.appendChild(el("button",{class:"card", style:"display:block;width:100%;text-align:left;margin-bottom:10px;cursor:pointer;color:var(--ink,#f4f1e8);font:inherit;", onclick:()=>chooseCouple(c.regNo, statusChoicesViaClub)},[
       el("div",{style:"display:flex;justify-content:space-between;align-items:baseline;gap:8px;"},[
         el("div",{style:"font-weight:800;font-size:15px;"}, c.player1+" / "+c.player2),
-        el("div",{style:"font-size:11px;color:var(--ink-faint);"}, c.regNo)]),
+        el("div",{style:"font-size:11px;color:var(--ink-faint);"}, statusChoicesViaClub ? "" : c.regNo)]),
       el("div",{style:"font-size:12.5px;margin-top:4px;"+(cat?"color:var("+cat.accentVar+");font-weight:700;":"")}, (cat?cat.name:c.category)+(c.club?" \u00b7 "+c.club:"")),
     ]));
   });
@@ -1969,7 +1989,7 @@ function renderRegistrationStatusCard(reg){
       c2.appendChild(el("div",{class:"kv"},[el("span",{class:"k"},"Deposit Kok"),el("span",{class:"v"},"Rp"+DEPOSIT_FEE.toLocaleString("id-ID")+" tunai saat hari-H")]));
     }
       return c2;
-    })() : renderMoneyCard(reg);
+    })() : (statusViaClub ? el("div",{class:"flag info"},"Rincian biaya dan deposit hanya tampil kalau kamu masuk pakai kode booking atau nomor HP yang didaftarkan.") : renderMoneyCard(reg));
     s2.appendChild(c2);
     s2.appendChild(el("button",{class:"btn btn-outline btn-block", style:"margin-top:12px;", onclick:()=>{ publicLiveCat = reg.category; publicLiveTab="bagan"; nav("public-live"); }},"Lihat Bagan Lengkap Kategori Ini"));
   } else if(reg.status==="CANCELLED"){
