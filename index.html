@@ -2758,6 +2758,7 @@ let categoryMoveModal = false;
 let revisionRequestModal = false;
 let revisionPrefill = "";
 let manualWaModal = false;
+let editNameModal = false;
 let markPaidModal = false;
 let discountModal = false;
 let discountState = {amount:"", note:""};
@@ -2786,6 +2787,9 @@ function viewAdminDetail(params){
   ]));
   head.appendChild(statusBadge(reg.status));
   sec.appendChild(head);
+  if(adminSession && !adminCategoryScope){
+    sec.appendChild(el("button",{class:"btn btn-outline btn-sm", style:"margin:-6px 0 12px;", onclick:()=>{ editNameModal=true; render(); }},"\u270f\ufe0f Koreksi Nama"));
+  }
 
   // Photos
   const photoRow = el("div",{class:"photo-pair"});
@@ -3056,6 +3060,7 @@ function viewAdminDetail(params){
   if(revisionRequestModal) wrap.appendChild(renderRevisionRequestModal(reg));
   if(manualWaModal) wrap.appendChild(renderManualWaModal(reg));
   if(markPaidModal) wrap.appendChild(renderMarkPaidModal(reg));
+  if(editNameModal && adminSession && !adminCategoryScope) wrap.appendChild(renderEditNameModal(reg));
   if(discountModal) wrap.appendChild(renderDiscountModal(reg));
   if(paidReceipt) wrap.appendChild(renderPaidReceiptModal());
 
@@ -3192,6 +3197,36 @@ function renderManualWaModal(reg){
   return overlay;
 }
 
+function renderEditNameModal(reg){
+  const overlay = el("div",{class:"modal-overlay", onclick:(e)=>{ if(e.target===overlay){ editNameModal=false; render(); } }});
+  const modal = el("div",{class:"modal"});
+  modal.appendChild(el("h3",{},"\u270f\ufe0f Koreksi Nama"));
+  modal.appendChild(el("p",{},"Hanya untuk memperbaiki salah ketik. Bagan, jadwal, dan LED ikut berubah otomatis. Perubahan dicatat di catatan admin."));
+  const vals = { p1: reg.player1, p2: reg.player2, club: reg.club||"" };
+  const mk = (label, key)=>{ const f = el("div",{class:"field"}); f.appendChild(el("label",{},label));
+    const i = el("input",{type:"text", value: vals[key], maxlength:"60"}); i.addEventListener("input",(e)=>{ vals[key]=e.target.value; }); f.appendChild(i); modal.appendChild(f); };
+  mk("Pemain 1","p1"); mk("Pemain 2","p2"); mk("Klub / PB","club");
+  const errBox = el("div",{}); modal.appendChild(errBox);
+  const actions = el("div",{class:"modal-actions"});
+  actions.appendChild(el("button",{class:"btn btn-outline", onclick:()=>{ editNameModal=false; render(); }},"Batal"));
+  let busy = false;
+  const saveBtn = el("button",{class:"btn btn-gold"},"Simpan Koreksi");
+  saveBtn.addEventListener("click", async ()=>{
+    if(busy) return; errBox.innerHTML="";
+    const p1 = vals.p1.trim().replace(/\s+/g," "), p2 = vals.p2.trim().replace(/\s+/g," "), club = vals.club.trim().replace(/\s+/g," ");
+    if(!p1 || !p2 || !club){ errBox.appendChild(el("div",{class:"flag"},"Pemain 1, Pemain 2, dan Klub wajib diisi.")); return; }
+    if(p1===reg.player1 && p2===reg.player2 && club===(reg.club||"")){ errBox.appendChild(el("div",{class:"flag"},"Belum ada yang berubah.")); return; }
+    busy = true; saveBtn.textContent = "Menyimpan\u2026";
+    try{
+      const r = await apiMutate("EDIT_NAMES", { id: reg.id, player1: p1, player2: p2, club });
+      applyRegFromServer(reg, r.data); updateIndexEntry(reg);
+      editNameModal = false; showToast("Nama dikoreksi: "+reg.player1+" / "+reg.player2);
+    }catch(e){ console.error(e); busy=false; saveBtn.textContent="Simpan Koreksi"; errBox.appendChild(el("div",{class:"flag"},"Gagal menyimpan koreksi. Coba lagi.")); return; }
+    render();
+  });
+  actions.appendChild(saveBtn); modal.appendChild(actions); overlay.appendChild(modal);
+  return overlay;
+}
 function renderMarkPaidModal(reg){
   const overlay = el("div",{class:"modal-overlay", onclick:(e)=>{ if(e.target===overlay){ markPaidModal=false; render(); } }});
   const modal = el("div",{class:"modal"});

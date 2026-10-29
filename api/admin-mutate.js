@@ -305,6 +305,34 @@ module.exports = async function handler(req, res) {
       return sendJson(res, 200, { ok: true, data });
     }
 
+    if (action === "EDIT_NAMES") {
+      if (!isSuper(session)) return sendJson(res, 403, { ok: false, error: "forbidden_scope" });
+      const { id } = payload;
+      if (!id) return sendJson(res, 400, { ok: false, error: "id_required" });
+      const clean = (v) => String(v == null ? "" : v).trim().replace(/\s+/g, " ");
+      const p1 = clean(payload.player1), p2 = clean(payload.player2), club = clean(payload.club);
+      if (!p1 || !p2 || !club || p1.length > 60 || p2.length > 60 || club.length > 80) {
+        return sendJson(res, 400, { ok: false, error: "invalid_names" });
+      }
+      const { data: existing, error: fetchErr } = await supabase
+        .from("registrations").select("player1, player2, club, admin_note").eq("id", id).maybeSingle();
+      if (fetchErr) throw fetchErr;
+      if (!existing) return sendJson(res, 404, { ok: false, error: "not_found" });
+      if (existing.player1 === p1 && existing.player2 === p2 && (existing.club || "") === club) {
+        return sendJson(res, 400, { ok: false, error: "no_change" });
+      }
+      const wib = new Date(Date.now() + 7 * 3600 * 1000).toISOString().slice(0, 16).replace("T", " ");
+      const line = "Koreksi nama " + wib + " WIB: " + existing.player1 + " / " + existing.player2 +
+        ((existing.club || "") !== club ? " [" + existing.club + "]" : "") + " -> " + p1 + " / " + p2 +
+        ((existing.club || "") !== club ? " [" + club + "]" : "");
+      const adminNote = [existing.admin_note || "", line].filter(Boolean).join("\n");
+      const { data, error } = await supabase
+        .from("registrations").update({ player1: p1, player2: p2, club, admin_note: adminNote, updated_at: nowIso() })
+        .eq("id", id).select().single();
+      if (error) throw error;
+      return sendJson(res, 200, { ok: true, data });
+    }
+
     if (action === "UPDATE_REGISTRATION") {
       const { id } = payload;
       if (!id) return sendJson(res, 400, { ok: false, error: "id_required" });
