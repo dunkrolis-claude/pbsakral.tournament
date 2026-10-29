@@ -933,9 +933,10 @@ async function loadPhase2(){
     SCHEDULE_VERSION = row ? row.version : 1;
   }catch(e){ console.error(e); SCHEDULE = []; SCHEDULE_VERSION = 1; }
 }
-async function saveDrawing(){
+async function saveDrawing(onlyCat){
   try{
     for(const cat of META.categories){
+      if(onlyCat && cat.code!==onlyCat) continue;
       const result = await apiMutate("SAVE_DRAWING", { categoryCode: cat.code, expectedVersion: DRAWING_VERSION[cat.code]||1, data: DRAWING[cat.code] });
       DRAWING_VERSION[cat.code] = result.data.version;
     }
@@ -948,9 +949,10 @@ async function saveDrawing(){
     return false;
   }
 }
-async function saveMatches(){
+async function saveMatches(onlyCat){
   try{
     for(const cat of META.categories){
+      if(onlyCat && cat.code!==onlyCat) continue;
       const result = await apiMutate("SAVE_MATCHES", { categoryCode: cat.code, expectedVersion: MATCHES_VERSION[cat.code]||1, data: {list: MATCHES[cat.code]||[]} });
       MATCHES_VERSION[cat.code] = result.data.version;
     }
@@ -3396,7 +3398,7 @@ function viewAdminDrawing(){
         drawing.auditLog.push({action:"UNLOCK", at: nowIso()});
         MATCHES[cat.code] = [];
         SCHEDULE = SCHEDULE.filter(s=>s.category!==cat.code);
-        await saveDrawing(); await saveMatches(); await saveSchedule();
+        await saveDrawing(cat.code); await saveMatches(cat.code); await saveSchedule();
         showToast("Drawing dibuka kembali.");
         render();
       }
@@ -3412,10 +3414,12 @@ function viewAdminDrawing(){
       body:"Setelah dikunci, bracket akan dibuat otomatis dari slot saat ini. Perubahan berikutnya memerlukan Unlock.",
       confirmLabel:"Lock Drawing",
       onConfirm: async ()=>{
+        showToast("Mengunci drawing "+cat.name+"\u2026 mohon tunggu sebentar.", 8000);
         drawing.locked = true;
         drawing.auditLog.push({action:"LOCK", at: nowIso()});
         generateBracketForCategory(cat.code);
-        await saveDrawing(); await saveMatches();
+        const okD = await saveDrawing(cat.code); const okM = okD ? await saveMatches(cat.code) : false;
+        if(!okD || !okM){ await loadPhase2(); render(); return; } // pesan kesalahan sudah ditampilkan; muat ulang agar tampilan = data server
         showToast("Drawing dikunci & bracket dibuat.");
         render();
       }
@@ -6136,8 +6140,10 @@ function renderConfirmModal(){
   const actions = el("div",{class:"modal-actions"});
   actions.appendChild(el("button",{class:"btn btn-outline", onclick:()=>{ confirmModal=null; render(); }},"Batal"));
   actions.appendChild(el("button",{class:"btn "+(confirmModal.danger?"btn-danger":"btn-gold"), onclick: async ()=>{
+    if(!confirmModal) return; // klik ganda: aksi sudah berjalan
     const fn = confirmModal.onConfirm;
     confirmModal = null;
+    render(); // tutup dialog langsung, aksi lanjut di latar
     await fn();
   }}, confirmModal.confirmLabel));
   modal.appendChild(actions);
