@@ -251,7 +251,7 @@ module.exports = async function handler(req, res) {
 
       const { data: existing, error: fetchErr } = await supabase
         .from("registrations")
-        .select("category")
+        .select("category, payment_amount_due")
         .eq("id", id)
         .maybeSingle();
       if (fetchErr) throw fetchErr;
@@ -259,11 +259,20 @@ module.exports = async function handler(req, res) {
       if (!scopeAllowsCategory(session, existing.category)) {
         return sendJson(res, 403, { ok: false, error: "forbidden_scope" });
       }
+      const payMethod = method || "TRANSFER";
+      const payAmount = Number(amount) || 0;
+      if (!["TRANSFER", "CASH", "ONSITE"].includes(payMethod) || !Number.isInteger(payAmount) || payAmount < 0) {
+        return sendJson(res, 400, { ok: false, error: "invalid_payment" });
+      }
+      // Nominal 0 hanya untuk "Bayar Hari H" atau tagihan yang memang sudah Rp0 (diskon penuh).
+      if (payAmount === 0 && payMethod !== "ONSITE" && Number(existing.payment_amount_due) > 0) {
+        return sendJson(res, 400, { ok: false, error: "zero_amount_not_allowed" });
+      }
 
       const { data, error } = await supabase.rpc("mark_registration_paid", {
         p_id: id,
-        p_method: method || "TRANSFER",
-        p_amount: Number(amount) || 0,
+        p_method: payMethod,
+        p_amount: payAmount,
         p_sender: sender || "",
         p_verified_by: verifiedBy || "Admin",
       });

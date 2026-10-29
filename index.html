@@ -1233,6 +1233,7 @@ function isQuotaFull(code){ const cat = catByCode(code); return committedCount(c
 // mark_registration_paid() Postgres function, invoked via
 // markRegistrationPaidViaApi() -> POST /api/admin-mutate (action
 // MARK_PAID / VERIFY_PAYMENT). See supabase_migration.sql section 4.
+function regOwed(reg){ const p = (reg && reg.payment) || {}; return Math.max(0, (Number(p.amountDue)||0) - (Number(p.amountPaid)||0)); }
 function displayCode(regNo){ return regNo || "Belum ada kode"; }
 function findSummaryByNo(no){ return INDEX.find(r=>r.regNo && r.regNo.toLowerCase()===String(no).trim().toLowerCase()); }
 
@@ -1954,7 +1955,7 @@ function renderRegistrationStatusCard(reg){
     const c2 = adminSession ? (function(){
     const c2 = el("div",{class:"card", style:"margin-top:12px;"});
     c2.appendChild(el("div",{style:"font-weight:800;font-size:13.5px;margin-bottom:8px;"},"\ud83e\uddfe Rincian Biaya"));
-    c2.appendChild(el("div",{class:"kv"},[el("span",{class:"k"},"Biaya Registrasi"),el("span",{class:"v"},rupiah(reg.payment.amountPaid)+" \u2713 Lunas")]));
+    c2.appendChild(el("div",{class:"kv"},[el("span",{class:"k"},"Biaya Registrasi"),el("span",{class:"v", style: regOwed(reg)>0?"color:var(--danger);":""}, rupiah(reg.payment.amountPaid)+(regOwed(reg)>0 ? " \u00b7 kurang "+rupiah(regOwed(reg)) : " \u2713 Lunas"))]));
     if(reg.deposit){
       const kokUsage = (reg.depositTransactions||[]).filter(t=>t.type==="USAGE").reduce((s,t)=>s+t.amount,0);
       const topups = (reg.depositTransactions||[]).filter(t=>t.type==="TOPUP").reduce((s,t)=>s+t.amount,0);
@@ -2805,7 +2806,7 @@ function viewAdminDetail(params){
   // Payment card
   const payCard = el("div",{class:"card"});
   payCard.appendChild(el("div",{style:"font-weight:800;font-size:13.5px;margin-bottom:8px;"},"Pembayaran"));
-  payCard.appendChild(el("div",{class:"kv"},[el("span",{class:"k"},"Metode"),el("span",{class:"v"}, reg.payment.method==="CASH" ? "\ud83d\udcb5 Tunai di Tempat" : "\ud83c\udfe6 Transfer/QRIS")]));
+  payCard.appendChild(el("div",{class:"kv"},[el("span",{class:"k"},"Metode"),el("span",{class:"v"}, reg.payment.method==="ONSITE" ? "\ud83d\udcb5 Bayar di Hari H (tunai di Loket)" : reg.payment.method==="CASH" ? "\ud83d\udcb5 Tunai di Tempat" : "\ud83c\udfe6 Transfer/QRIS")]));
   if((reg.discountAmount||0)>0){
     payCard.appendChild(el("div",{class:"kv"},[el("span",{class:"k"},"Biaya Normal"),el("span",{class:"v"},rupiah(reg.payment.amountDue + reg.discountAmount))]));
     payCard.appendChild(el("div",{class:"kv"},[el("span",{class:"k"},"Diskon"),el("span",{class:"v", style:"color:var(--ok);"},"\u2212"+rupiah(reg.discountAmount))]));
@@ -2930,7 +2931,7 @@ function viewAdminDetail(params){
           action: "VERIFY_PAYMENT",
         });
         if(!updated) return;
-        applyRegFromServer(reg, updated);
+        applyRegFromServer(reg, updated); updateIndexEntry(reg);
         paidReceipt = { id: reg.id, regNo: reg.regNo, name: reg.player1+" / "+reg.player2, category: cat.name, amount: reg.payment.amountPaid, method: reg.payment.method };
         render();
       }
@@ -3178,39 +3179,44 @@ function renderMarkPaidModal(reg){
   const seg = el("div",{class:"seg"});
   const btnT = el("button",{class: markPaidState.method==="TRANSFER"?"active":"", type:"button"},"Transfer/QRIS");
   const btnC = el("button",{class: markPaidState.method==="CASH"?"active":"", type:"button"},"Tunai");
-  seg.appendChild(btnT); seg.appendChild(btnC);
-  btnT.addEventListener("click",()=>{ markPaidState.method="TRANSFER"; btnT.className="active"; btnC.className=""; });
-  btnC.addEventListener("click",()=>{ markPaidState.method="CASH"; btnC.className="active"; btnT.className=""; });
+  const btnO = el("button",{class: markPaidState.method==="ONSITE"?"active":"", type:"button"},"Bayar Hari H");
+  seg.appendChild(btnT); seg.appendChild(btnC); seg.appendChild(btnO);
+  const setM = (m)=>{ markPaidState.method=m; btnT.className=m==="TRANSFER"?"active":""; btnC.className=m==="CASH"?"active":""; btnO.className=m==="ONSITE"?"active":"";
+    if(m==="ONSITE"){ markPaidState.amount="0"; markPaidState.sender="Bayar di Hari H"; } else if(markPaidState.sender==="Bayar di Hari H"){ markPaidState.sender=reg.player1; markPaidState.amount=String(reg.payment.amountDue); }
+    amtInput.value = markPaidState.amount; senderInput.value = markPaidState.sender; };
+  btnT.addEventListener("click",()=>setM("TRANSFER")); btnC.addEventListener("click",()=>setM("CASH")); btnO.addEventListener("click",()=>setM("ONSITE"));
   methodField.appendChild(seg);
   modal.appendChild(methodField);
 
   const amtField = el("div",{class:"field"});
   amtField.appendChild(el("label",{},"Nominal Diterima"));
-  const amtInput = el("input",{type:"number", value: markPaidState.amount});
+  const amtInput = el("input",{type:"number", min:"0", value: markPaidState.amount});
   amtInput.addEventListener("input",(e)=>{ markPaidState.amount = e.target.value; });
   amtField.appendChild(amtInput);
   modal.appendChild(amtField);
 
   const senderField = el("div",{class:"field"});
-  senderField.appendChild(el("label",{},"Nama Pengirim/Pembayar"));
+  senderField.appendChild(el("label",{},"Nama Pembayar / Keterangan"));
   const senderInput = el("input",{type:"text", value: markPaidState.sender});
   senderInput.addEventListener("input",(e)=>{ markPaidState.sender = e.target.value; });
   senderField.appendChild(senderInput);
   modal.appendChild(senderField);
 
+  modal.appendChild(el("div",{style:"font-size:11.5px;color:var(--ink-faint);margin:-4px 0 10px;"},"Nominal 0 hanya untuk Bayar Hari H atau bila tagihan sudah Rp0 karena diskon. Pasangan tetap jadi peserta; sisa tagihan dicatat dan ditagih di Loket."));
   const errBox = el("div",{});
   modal.appendChild(errBox);
 
   const actions = el("div",{class:"modal-actions"});
   actions.appendChild(el("button",{class:"btn btn-outline", onclick:()=>{ markPaidModal=false; render(); }},"Batal"));
-  const confirmBtn = el("button",{class:"btn btn-gold"},"Tandai Lunas & Buat Kode");
+  const confirmBtn = el("button",{class:"btn btn-gold"},"Simpan & Buat Kode Peserta");
   let submitting = false;
   confirmBtn.addEventListener("click", async ()=>{
     if(submitting) return;
     errBox.innerHTML = "";
     const amt = Number(markPaidState.amount);
-    if(!amt || amt<=0 || !markPaidState.sender.trim()){
-      errBox.appendChild(el("div",{class:"flag"},"Isi nominal dan nama pembayar dengan benar."));
+    const zeroOk = markPaidState.method==="ONSITE" || (Number(reg.payment.amountDue)||0) <= 0;
+    if(isNaN(amt) || amt<0 || (amt===0 && !zeroOk) || !markPaidState.sender.trim()){
+      errBox.appendChild(el("div",{class:"flag"}, amt===0 && !zeroOk ? "Nominal 0 hanya boleh untuk Bayar Hari H atau tagihan Rp0 (diskon penuh)." : "Isi nominal dan nama pembayar/keterangan dengan benar."));
       return;
     }
     submitting = true;
@@ -3225,10 +3231,10 @@ function renderMarkPaidModal(reg){
       action: "MARK_PAID",
     });
     submitting = false;
-    if(!updated){ confirmBtn.disabled=false; confirmBtn.textContent="Tandai Lunas & Buat Kode"; return; }
-    applyRegFromServer(reg, updated);
+    if(!updated){ confirmBtn.disabled=false; confirmBtn.textContent="Simpan & Buat Kode Peserta"; return; }
+    applyRegFromServer(reg, updated); updateIndexEntry(reg);
     markPaidModal = false;
-    paidReceipt = { id: reg.id, regNo: reg.regNo, name: reg.player1+" / "+reg.player2, category: cat.name, amount: amt, method: markPaidState.method };
+    paidReceipt = { id: reg.id, regNo: reg.regNo, name: reg.player1+" / "+reg.player2, category: cat.name, amount: amt, method: markPaidState.method, owed: regOwed(reg) };
     render();
   });
   actions.appendChild(confirmBtn);
@@ -3241,13 +3247,14 @@ function renderPaidReceiptModal(){
   const r = paidReceipt;
   const overlay = el("div",{class:"modal-overlay", onclick:(e)=>{ if(e.target===overlay){ paidReceipt=null; render(); } }});
   const modal = el("div",{class:"modal"});
-  modal.appendChild(el("h3",{},"\u2705 Lunas \u2014 Kode Peserta Dibuat"));
+  modal.appendChild(el("h3",{}, (r.owed>0 ? "\u2705 Terdaftar" : "\u2705 Lunas")+" \u2014 Kode Peserta Dibuat"));
   const card = el("div",{class:"card", style:"margin-bottom:14px;text-align:center;"});
   card.appendChild(el("div",{style:"font-size:11px;color:var(--ink-faint);"},"Kode Peserta"));
   card.appendChild(el("div",{style:"font-family:'Anton';font-size:28px;color:var(--gold-bright);letter-spacing:1px;"}, r.regNo));
   card.appendChild(el("div",{class:"kv"},[el("span",{class:"k"},"Nama"),el("span",{class:"v"},r.name)]));
   card.appendChild(el("div",{class:"kv"},[el("span",{class:"k"},"Kategori"),el("span",{class:"v"},r.category)]));
-  card.appendChild(el("div",{class:"kv"},[el("span",{class:"k"},"Diterima"),el("span",{class:"v", style:"color:var(--gold-bright);"},rupiah(r.amount)+" ("+(r.method==="CASH"?"Tunai":"Transfer")+")")]));
+  card.appendChild(el("div",{class:"kv"},[el("span",{class:"k"},"Diterima"),el("span",{class:"v", style:"color:var(--gold-bright);"},rupiah(r.amount)+" ("+(r.method==="CASH"?"Tunai":r.method==="ONSITE"?"Bayar Hari H":"Transfer")+")")]));
+  if(r.owed>0) card.appendChild(el("div",{class:"kv"},[el("span",{class:"k"},"Masih harus dibayar"),el("span",{class:"v", style:"color:var(--danger);"},rupiah(r.owed)+" (di Loket)")]));
   modal.appendChild(card);
   modal.appendChild(el("button",{class:"btn btn-info btn-block", style:"margin-bottom:8px;", onclick:()=>{
     const fullReg = REG_CACHE[r.id];
@@ -4308,7 +4315,24 @@ function renderLoketCard(reg){
   head.appendChild(statusBadge(reg.status));
   c.appendChild(head);
   c.appendChild(el("div",{class:"kv"},[el("span",{class:"k"},"Kategori"),el("span",{class:"v", style:`color:var(${cat.accentVar})`},cat.name)]));
-  c.appendChild(el("div",{class:"kv"},[el("span",{class:"k"},"Status Registrasi"),el("span",{class:"v"}, reg.payment.status==="PAID"?"\u2713 Lunas":(reg.payment.status==="WAITING_VERIFICATION"?"Menunggu Verifikasi":"Belum Bayar"))]));
+  c.appendChild(el("div",{class:"kv"},[el("span",{class:"k"},"Status Registrasi"),el("span",{class:"v", style: regOwed(reg)>0 && reg.status==="REGISTERED" ? "color:var(--danger);" : ""}, reg.status==="REGISTERED" && regOwed(reg)>0 ? "Kurang "+rupiah(regOwed(reg)) : (reg.payment.status==="PAID"?"\u2713 Lunas":(reg.payment.status==="WAITING_VERIFICATION"?"Menunggu Verifikasi":"Belum Bayar")))]));
+
+  if(reg.status==="REGISTERED" && regOwed(reg)>0){
+    const owed = regOwed(reg);
+    c.appendChild(el("div",{class:"flag warn", style:"margin-top:8px;"},"Biaya pendaftaran belum lunas: tagihan "+rupiah(reg.payment.amountDue)+", diterima "+rupiah(reg.payment.amountPaid)+". Sisa "+rupiah(owed)+"."));
+    let payAmt = String(owed);
+    const pf = el("div",{class:"field", style:"margin-top:8px;"}); pf.appendChild(el("label",{},"Nominal Diterima"));
+    const pin = el("input",{type:"number", min:"1", value:payAmt}); pin.addEventListener("input",(e)=>{ payAmt = e.target.value; }); pf.appendChild(pin); c.appendChild(pf);
+    c.appendChild(el("button",{class:"btn btn-gold btn-block", onclick: async ()=>{
+      const amt = Number(payAmt);
+      if(!Number.isInteger(amt) || amt<=0 || amt>owed){ showToast("Nominal harus 1 sampai "+rupiah(owed)+"."); return; }
+      reg.payment.amountPaid = (Number(reg.payment.amountPaid)||0) + amt;
+      reg.payment.settlements = (reg.payment.settlements||[]).concat([{ amount: amt, at: nowIso(), note: "Pelunasan di Loket" }]);
+      await persistReg(reg);
+      loketReceipt = { name: reg.player1+" / "+reg.player2, amount: amt, label:"Pelunasan Biaya Pendaftaran", newBalance: reg.deposit ? reg.deposit.balance : 0, status: regOwed(reg)===0 ? "LUNAS" : "MASIH KURANG "+rupiah(regOwed(reg)) };
+      render();
+    }},"Terima Pelunasan"));
+  }
 
   if(reg.status!=="REGISTERED"){
     c.appendChild(el("div",{class:"flag warn", style:"margin-top:8px;"},"Peserta ini belum berstatus REGISTERED, jadi belum bisa dicek depositnya di sini."));
@@ -4600,8 +4624,8 @@ function viewAdminFinance(){
   sec.appendChild(el("div",{class:"section-title"},"Rekap Pemasukan Registrasi"));
 
   const registeredList = INDEX.filter(r=>r.status==="REGISTERED");
-  const cashIncome = registeredList.filter(r=>r.paymentMethod==="CASH").reduce((s,r)=>s+(r.paymentAmountPaid||0),0);
-  const transferIncome = registeredList.filter(r=>r.paymentMethod!=="CASH").reduce((s,r)=>s+(r.paymentAmountPaid||0),0);
+  const cashIncome = registeredList.filter(r=>r.paymentMethod==="CASH"||r.paymentMethod==="ONSITE").reduce((s,r)=>s+(r.paymentAmountPaid||0),0);
+  const transferIncome = registeredList.filter(r=>r.paymentMethod!=="CASH"&&r.paymentMethod!=="ONSITE").reduce((s,r)=>s+(r.paymentAmountPaid||0),0);
   const totalPayment = cashIncome + transferIncome;
   const grid = el("div",{class:"stat-grid"});
   grid.appendChild(statCard("\ud83d\udcb5 Pemasukan Tunai", rupiah(cashIncome), true));
