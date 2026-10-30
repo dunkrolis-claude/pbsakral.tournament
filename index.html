@@ -1369,6 +1369,7 @@ function openWaLink(reg, notif){
 /* ============ RENDER ROOT ============ */
 function nav(name, params={}){
   route = {name, params}; window.scrollTo(0,0);
+  if(adminSession || refereeScope){ try{ if(/^admin-/.test(name) || name==="wasit") localStorage.setItem("pbs_last_route", name); }catch(e){} }
   if(name!=="public-live" && PLAYER_HASH_RE.test(location.hash||"")){ try{ history.replaceState(null,"",location.pathname+location.search); }catch(e){} }
   render();
 }
@@ -1430,6 +1431,7 @@ function topbar(activeTab){
     navWrap.appendChild(el("button",{onclick:async ()=>{
       if(refDemo){ exitRefDemo(); return; }
       try{ await fetch("/api/admin-logout", {method:"POST", credentials:"include"}); }catch(e){ console.error(e); }
+      try{ localStorage.removeItem("pbs_admin_hint"); localStorage.removeItem("pbs_last_route"); }catch(e){}
       adminSession=false; adminCategoryScope=null; listFilterCategory="ALL"; refereeScope=null; REF_BOARD=null; clearInterval(refBoardTimer);
       await loadIndex(); await loadPhase2(); // refresh to public-safe views now that session is gone
       nav("home");
@@ -2538,13 +2540,14 @@ async function loginViaApi(pin){
     return body.scope; // "SUPER" or a category code
   }catch(e){ console.error(e); return null; }
 }
-async function tryLogin(val){
-  const scope = await loginViaApi(val);
-  if(!scope){ showToast("Kode akses salah."); return; }
+async function enterWithScope(scope, restoring){
+  try{ localStorage.setItem("pbs_admin_hint","1"); }catch(e){}
+  let saved = null;
+  if(restoring){ try{ saved = localStorage.getItem("pbs_last_route"); }catch(e){} }
   if(/^WASIT_[A-ER]$/.test(scope)){
     refereeScope = scope; adminSession = false; adminCategoryScope = null;
     await loadRefBoard();
-    nav("wasit");
+    if(restoring) route = {name:"wasit", params:{}}; else nav("wasit");
     clearInterval(refBoardTimer);
     refBoardTimer = setInterval(async ()=>{ if(refereeScope && route.name==="wasit" && !refBusy){ await loadRefBoard(); if(route.name==="wasit") render(); } }, 15000);
     return;
@@ -2552,7 +2555,27 @@ async function tryLogin(val){
   adminSession = true;
   adminCategoryScope = (scope==="SUPER") ? null : scope;
   await Promise.all([loadIndex(), loadPhase2(), adminCategoryScope? null : loadExpenses(), loadFinanceExtra()]); // admin can now load registrations + phase2 + keuangan
-  nav(adminCategoryScope ? "admin-list" : "admin-dashboard");
+  const home = adminCategoryScope ? "admin-list" : "admin-dashboard";
+  const target = (restoring && saved && /^admin-/.test(saved) && !(adminCategoryScope && saved!=="admin-list")) ? saved : home;
+  if(restoring) route = {name:target, params:{}}; else nav(home);
+}
+// Setelah refresh: pulihkan sesi dari cookie server (bila pernah login di perangkat ini).
+async function restoreSession(){
+  let hint = null; try{ hint = localStorage.getItem("pbs_admin_hint"); }catch(e){}
+  if(!hint) return false;
+  try{
+    const res = await fetch("/api/admin-read?resource=whoami", { credentials:"include" });
+    if(!res.ok){ try{ localStorage.removeItem("pbs_admin_hint"); }catch(e){} return false; }
+    const body = await res.json().catch(()=>null);
+    if(!body || !body.ok || !body.data || !body.data.scope){ return false; }
+    await enterWithScope(body.data.scope, true);
+    return true;
+  }catch(e){ console.error(e); return false; }
+}
+async function tryLogin(val){
+  const scope = await loginViaApi(val);
+  if(!scope){ showToast("Kode akses salah."); return; }
+  await enterWithScope(scope, false);
 }
 
 /* ============ ADMIN: LAYOUT ============ */
@@ -3832,6 +3855,35 @@ function pdfFit(doc, text, maxW){
 function pdfStamp(){ const d = new Date(); return "Dicetak "+String(d.getDate()).padStart(2,"0")+"/"+String(d.getMonth()+1).padStart(2,"0")+"/"+d.getFullYear()+" "+String(d.getHours()).padStart(2,"0")+":"+String(d.getMinutes()).padStart(2,"0"); }
 function pdfFileName(prefix, name){ return prefix+"-"+String(name).replace(/[^A-Za-z0-9]+/g,"-").replace(/^-|-$/g,"")+".pdf"; }
 
+function pdfClubOf(side){
+  if(!side || side.type!=="participant" || !side.participantId) return "";
+  const r = regSummary(side.participantId);
+  return r && r.club ? String(r.club).trim() : "";
+}
+// tulis nama + (klub/PB) abu-abu kecil; teks dipotong agar muat lebar maxW
+function pdfNameClub(doc, label, club, x, y, maxW, fs, bold){
+  doc.setFont("helvetica", bold?"bold":"normal"); doc.setFontSize(fs);
+  const full = pdfTxt(label);
+  if(!club){ doc.text(pdfFit(doc, full, maxW), x, y); return; }
+  const nameW = doc.getTextWidth(full);
+  const clubTxt = pdfTxt(club);
+  doc.setFontSize(Math.max(4.5, fs-1.5)); const clubW = doc.getTextWidth("  "+clubTxt);
+  doc.setFontSize(fs);
+  if(nameW + clubW <= maxW){
+    doc.text(full, x, y);
+    doc.setFont("helvetica","italic"); doc.setFontSize(Math.max(4.5, fs-1.5)); doc.setTextColor(120);
+    doc.text("  "+clubTxt, x+nameW, y);
+    doc.setTextColor(20);
+  } else {
+    // nama dulu, klub dipotong sesuai sisa ruang
+    const room = maxW - nameW;
+    if(room > 8){
+      doc.text(full, x, y);
+      doc.setFont("helvetica","italic"); doc.setFontSize(Math.max(4.5, fs-1.5)); doc.setTextColor(120);
+      doc.text(pdfFit(doc, "  "+clubTxt, room), x+nameW, y); doc.setTextColor(20);
+    } else doc.text(pdfFit(doc, full, maxW), x, y);
+  }
+}
 const PDF_CAT_RGB = { PRIME:[212,175,55], CORE:[201,118,47], RISING:[59,143,212], QUEENS:[212,59,131] };
 const PDF_INK = [11,10,8], PDF_GOLD = [212,175,55];
 function pdfCatRgb(code){ return PDF_CAT_RGB[code] || [120,120,120]; }
@@ -3923,9 +3975,9 @@ function buildBracketPdf(JsPDF, catCode){
         const winner = win(side) && !m.bye;
         if(winner){ doc.setFillColor(...pdfTint(rgb,0.28)); doc.rect(x+1.3, ry+0.15, colW-1.3, boxH/2-0.3, "F"); }
         const ty = ry + boxH*0.36;
-        doc.setFont("helvetica", winner ? "bold" : (isBye ? "italic" : "normal")); doc.setFontSize(fs);
         doc.setTextColor(isBye?140:20);
-        doc.text(pdfFit(doc, label, colW-(done?13:12)), x+2.6, ty);
+        if(isBye){ doc.setFont("helvetica","italic"); doc.setFontSize(fs); doc.text(pdfFit(doc, label, colW-(done?13:12)), x+2.6, ty); }
+        else pdfNameClub(doc, label, pdfClubOf(side), x+2.6, ty, colW-(done?13:12), fs, winner);
         if(done && sc!=null){ doc.setFont("helvetica","bold"); doc.setTextColor(...(winner?rgb.map(v=>Math.round(v*0.7)):[90,90,90])); doc.text(pdfTxt(sc), x+colW-1.2, ty, {align:"right"}); }
       });
       doc.setTextColor(0);
@@ -3999,9 +4051,8 @@ function buildSchedulePdf(JsPDF, catCodes){
           doc.setTextColor(...PDF_GOLD); doc.setFontSize(8.5); doc.text(pdfTxt(r.e.court), x+5.5, y+rowH*0.67, {align:"center"}); x += cols[1].w;
           doc.setTextColor(20); doc.setFont("helvetica", big?"bold":"normal"); doc.setFontSize(8.5);
           doc.text(pdfFit(doc, ROUND_LABELS[r.m.round]+" #"+r.m.matchNo, cols[2].w-3), x+2, y+rowH*0.67); x += cols[2].w;
-          doc.setFont("helvetica","normal");
-          doc.text(pdfFit(doc, matchSideLabel(code, r.m.sideA), cols[3].w-3), x+2, y+rowH*0.67); x += cols[3].w;
-          doc.text(pdfFit(doc, matchSideLabel(code, r.m.sideB), cols[4].w-3), x+2, y+rowH*0.67); x += cols[4].w;
+          pdfNameClub(doc, matchSideLabel(code, r.m.sideA), pdfClubOf(r.m.sideA), x+2, y+rowH*0.67, cols[3].w-3, 8.5, false); x += cols[3].w;
+          pdfNameClub(doc, matchSideLabel(code, r.m.sideB), pdfClubOf(r.m.sideB), x+2, y+rowH*0.67, cols[4].w-3, 8.5, false); x += cols[4].w;
           doc.setDrawColor(...pdfTint(rgb,0.6)); doc.setLineWidth(0.3); doc.setFillColor(255,255,255); doc.roundedRect(x+2, y+1.3, cols[5].w-4, rowH-2.6, 1, 1, "FD");
         }
         doc.setDrawColor(228); doc.setLineWidth(0.15); doc.line(M, y+rowH, W-M, y+rowH);
@@ -7368,6 +7419,7 @@ function playerRouteFromHash(hash){
     await loadIndex();
     await loadPhase2();
   }
+  const restoredRoute = (await restoreSession()) ? route : null; // pulihkan login admin/wasit setelah refresh
   await loadExpenses();
   ready = true;
   const urlParams = new URLSearchParams(location.search);
@@ -7378,6 +7430,7 @@ function playerRouteFromHash(hash){
   if(location.hash==="#tv"){ route = {name:"tv", params:{}}; }
   else if(location.hash==="#wasit"){ route = {name:"admin-login", params:{}}; }
   else if(location.hash==="#latihan"){ startRefDemo(); return; }
+  else if(restoredRoute && !regParam && !pr){ route = restoredRoute; }
   render();
   if(!adminSession && !refereeScope){
     if(PLAYER_SW_OK()){

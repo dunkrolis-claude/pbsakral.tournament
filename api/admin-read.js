@@ -24,6 +24,11 @@ module.exports = async function handler(req, res) {
   const resource = req.query.resource;
   const supabase = getServiceClient();
 
+  // Cek sesi (dipakai klien setelah refresh halaman agar tidak perlu login ulang). Hanya mengembalikan scope.
+  if (resource === "whoami") {
+    return sendJson(res, 200, { ok: true, data: { scope: session.scope } });
+  }
+
   // Akun wasit hanya boleh membaca papan wasit.
   if (isReferee(session) && resource !== "ref_board") {
     return sendJson(res, 403, { ok: false, error: "forbidden_scope" });
