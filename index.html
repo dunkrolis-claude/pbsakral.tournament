@@ -485,6 +485,7 @@ function regSummaryFromIndexRow(row){
     paymentStatus: row.payment_status||"UNPAID", paymentMethod: row.payment&&row.payment.method||"TRANSFER",
     depositInitial: row.deposit_initial||0, depositBalance: row.deposit_balance||0,
     discountAmount: row.discount_amount||0, discountNote: row.discount_note||"",
+    settlements: Array.isArray(row.payment_settlements) ? row.payment_settlements : [],
     isDemo: !!row.is_demo,
   };
 }
@@ -993,7 +994,7 @@ function usedSlotParticipants(catCode, excludeIndex){
   slots.forEach((pid,idx)=>{ if(pid && idx!==excludeIndex) used.add(pid); });
   return used;
 }
-function buildBracketList(catCode, slots){
+function buildBracketList(catCode, slots, markBye){
   const cat = catByCode(catCode);
   const roundNames = roundNamesFor(cat.quota);
   const flat = [];
@@ -1018,10 +1019,36 @@ function buildBracketList(catCode, slots){
     }
     prevRound = curRound;
   }
+  /* BYE: pertandingan babak awal yang hanya punya satu pasangan. Pasangan itu otomatis maju ke babak
+     berikutnya (status WO + penanda bye), tidak dijadwalkan, tidak memotong kok. */
+  if(markBye){
+    flat.filter(m=>m.roundIndex===0).forEach(m=>{
+      const a = m.sideA.participantId, b = m.sideB.participantId;
+      if(!!a === !!b) return;
+      const w = a || b;
+      m.bye = true; m.status = "WO"; m.winnerParticipantId = w;
+      const down = flat.find(x=>x.roundIndex===1 && (x.sideA.matchId===m.id || x.sideB.matchId===m.id));
+      if(down){ const key = down.sideA.matchId===m.id ? "sideA" : "sideB"; down[key] = { type:"participant", participantId:w, resolvedFrom:m.id }; }
+    });
+  }
   return flat;
 }
+/* Ringkasan struktur babak awal dari slot drawing: berapa pertandingan nyata, bye, dan kosong-dua-duanya. */
+function byeSummary(slots){
+  let real=0, bye=0, empty=0;
+  for(let i=0;i<slots.length;i+=2){ const a=!!slots[i], b=!!slots[i+1]; if(a&&b) real++; else if(a||b) bye++; else empty++; }
+  return { real, bye, empty };
+}
+/* Saran: bila peserta lebih sedikit dari kuota, kosongkan slot kedua di pertandingan yang tersebar merata. */
+function suggestedByeSlots(quota, n){
+  const M = quota/2, B = quota - n;
+  if(!(B>0) || n<=M) return [];
+  const out = [];
+  for(let i=0;i<B;i++){ const k = Math.floor((i+0.5)*M/B); out.push(2*k+1); } // indeks slot (0-based) = slot kedua pertandingan k
+  return out;
+}
 function generateBracketForCategory(catCode){
-  MATCHES[catCode] = buildBracketList(catCode, DRAWING[catCode].slots);
+  MATCHES[catCode] = buildBracketList(catCode, DRAWING[catCode].slots, true);
 }
 /* Draft bracket: kerangka bagan yang sudah tampil sebelum drawing di-lock. Begitu match asli ada
    (setelah Lock Drawing), bagan otomatis memakai match asli. Admin melihat nama pemain yang sudah
@@ -1043,7 +1070,7 @@ function matchById(catCode, id){ return (MATCHES[catCode]||[]).find(m=>m.id===id
 function matchSideLabel(catCode, side){
   const isDraft = (MATCHES[catCode]||[]).length===0;
   if(side.type==="participant"){
-    return side.participantId ? participantLabel(side.participantId) : (isDraft ? "Menunggu drawing" : "\u2014 (kosong)");
+    return side.participantId ? participantLabel(side.participantId) : (isDraft ? "Menunggu drawing" : "BYE");
   }
   const ref = matchById(catCode, side.matchId) || (isDraft ? bracketMatchesFor(catCode).find(x=>x.id===side.matchId) : null);
   if(!ref) return "TBD";
@@ -1160,6 +1187,7 @@ function indexSummary(reg){
     paymentMethod: reg.payment ? (reg.payment.method||"TRANSFER") : "TRANSFER",
     depositInitial: reg.deposit ? reg.deposit.initial : 0,
     depositBalance: reg.deposit ? reg.deposit.balance : 0,
+    settlements: (reg.payment && Array.isArray(reg.payment.settlements)) ? reg.payment.settlements : [],
     isDemo: !!reg.isDemo,
   };
 }
@@ -1941,7 +1969,7 @@ function renderParticipantMatchCards(reg){
       const row = el("div",{class:"kv"});
       row.appendChild(el("span",{class:"k"}, ROUND_LABELS[m.round]+" vs "+opponentLabelFor(reg.category, m, reg.id)));
       row.appendChild(el("span",{class:"v", style: won?"color:var(--ok);":"color:var(--danger);"},
-        (won?"\u2713 Menang":"\u2717 Kalah")+(m.status==="WO"?" (WO)":" "+m.scoreA+"-"+m.scoreB)));
+        (m.bye ? "BYE \u2014 langsung maju" : (won?"\u2713 Menang":"\u2717 Kalah")+(m.status==="WO"?" (WO)":" "+m.scoreA+"-"+m.scoreB))));
       histCard.appendChild(row);
     });
     wrap.appendChild(histCard);
@@ -2379,7 +2407,7 @@ function renderPublicHasil(){
   let finished = [];
   META.categories.forEach(cat=>{
     (MATCHES[cat.code]||[]).forEach(m=>{
-      if(m.status==="FINISHED" || m.status==="WO") finished.push(m);
+      if((m.status==="FINISHED" || m.status==="WO") && !m.bye) finished.push(m);
     });
   });
   finished.sort((a,b)=> (b.actualFinishAt||"").localeCompare(a.actualFinishAt||""));
@@ -3557,7 +3585,7 @@ function viewAdminDrawing(){
     }},"Simpan Draft"));
     row.appendChild(el("button",{class:"btn btn-gold btn-sm", style:"flex:1;", disabled: filled===0, onclick:()=>openConfirm({
       title:"Kunci Drawing "+cat.name+"?",
-      body:"Setelah dikunci, bracket akan dibuat otomatis dari slot saat ini. Perubahan berikutnya memerlukan Unlock.",
+      body:(function(){ const bs = byeSummary(drawing.slots); return "Setelah dikunci, bracket akan dibuat otomatis dari slot saat ini. Perubahan berikutnya memerlukan Unlock. Babak awal: "+bs.real+" pertandingan nyata, "+bs.bye+" BYE (pasangan langsung maju)"+(bs.empty>0?", "+bs.empty+" pertandingan kosong dua-duanya (tidak ideal)":"")+"."; })(),
       confirmLabel:"Lock Drawing",
       onConfirm: async ()=>{
         showToast("Mengunci drawing "+cat.name+"\u2026 mohon tunggu sebentar.", 8000);
@@ -3574,10 +3602,23 @@ function viewAdminDrawing(){
   }
   sec.appendChild(headCard);
 
+  const hintSlots = drawing.locked ? [] : suggestedByeSlots(cat.quota, pool.length);
+  const hintSet = new Set(hintSlots);
+  if(hintSlots.length){
+    const bs = byeSummary(drawing.slots);
+    const hc = el("div",{class:"card", style:"margin-bottom:10px;"});
+    hc.appendChild(el("div",{style:"font-weight:800;font-size:13.5px;margin-bottom:6px;"},"Pola BYE yang disarankan"));
+    hc.appendChild(el("div",{style:"font-size:12.5px;color:var(--ink-dim);line-height:1.5;"},
+      pool.length+" peserta untuk "+cat.quota+" slot = "+hintSlots.length+" BYE. Pasangan yang lawannya kosong langsung maju ke babak berikutnya dan tidak masuk jadwal. Agar BYE tersebar merata dan tidak ada dua slot kosong dalam satu pertandingan, kosongkan slot bernomor: "+hintSlots.map(i=>"#"+(i+1)).join(", ")+"."));
+    hc.appendChild(el("div",{style:"font-size:12.5px;margin-top:6px;"+(bs.empty>0?"color:var(--danger);":"")},
+      "Saat ini: "+bs.real+" pertandingan nyata, "+bs.bye+" BYE"+(bs.empty>0?", "+bs.empty+" pertandingan kosong dua-duanya":"")+"."));
+    sec.appendChild(hc);
+  }
   const slotsCard = el("div",{class:"card"});
   drawing.slots.forEach((pid, idx)=>{
     const row = el("div",{class:"drawing-slot-row"});
     row.appendChild(el("div",{class:"drawing-slot-no"},"#"+(idx+1)));
+    if(hintSet.has(idx) && !pid) row.appendChild(el("span",{class:"badge b-ok", style:"margin-right:6px;"},"BYE"));
     if(drawing.locked){
       row.appendChild(el("div",{style:"flex:1;font-size:13px;"}, pid? participantLabel(pid) : "\u2014 (kosong)"));
     } else {
@@ -3639,7 +3680,7 @@ function renderBracketTree(catCode){
       const isWinnerB = m.winnerParticipantId && m.sideB.type==="participant" && m.sideB.participantId===m.winnerParticipantId;
       const box = el("div",{class:"bracket-box", id:"bb-"+m.id});
       if(m.status==="FINISHED" || m.status==="WO"){
-        box.appendChild(el("div",{class:"bb-score"}, m.status==="WO" ? "WO" : (m.scoreA+"-"+m.scoreB)));
+        box.appendChild(el("div",{class:"bb-score"}, m.bye ? "BYE" : m.status==="WO" ? "WO" : (m.scoreA+"-"+m.scoreB)));
       }
       box.appendChild(el("div",{class:"bb-slot"+(isWinnerA?" winner":"")}, matchSideLabel(catCode, m.sideA)));
       box.appendChild(el("div",{class:"bb-mid"}));
@@ -3737,15 +3778,15 @@ function viewAdminBracket(){
       const top = el("div",{class:"m-top"});
       top.appendChild(el("span",{},"Match #"+m.matchNo));
       const rightTop = el("div",{style:"display:flex;gap:6px;align-items:center;"});
-      if(m.status) rightTop.appendChild(mcStatusBadge(m.status));
-      rightTop.appendChild(el("button",{class:"btn btn-outline btn-xs", onclick:()=>{ moveMatchTarget={category:cat.code, matchId:m.id}; render(); }},
+      if(m.status) rightTop.appendChild(mcStatusBadge(m.bye ? "BYE" : m.status));
+      if(!m.bye) rightTop.appendChild(el("button",{class:"btn btn-outline btn-xs", onclick:()=>{ moveMatchTarget={category:cat.code, matchId:m.id}; render(); }},
         sched ? "Jadwal: "+ (TOURNAMENT_DAYS.find(d=>d.day===sched.day)||{}).label?.split(",")[0] + " " + timeLabel(sched.timeIndex, sched.day)+" Lap"+sched.court : "Atur Jadwal"));
       top.appendChild(rightTop);
       row.appendChild(top);
       const isWinnerA = m.winnerParticipantId && m.sideA.type==="participant" && m.sideA.participantId===m.winnerParticipantId;
       const isWinnerB = m.winnerParticipantId && m.sideB.type==="participant" && m.sideB.participantId===m.winnerParticipantId;
       row.appendChild(el("div",{class:"m-side"+(isWinnerA?" winner":""), style:isWinnerA?"color:var(--gold-bright);":""}, matchSideLabel(cat.code, m.sideA)));
-      row.appendChild(el("div",{class:"m-vs"}, m.status==="FINISHED"||m.status==="WO" ? (m.scoreA!==null?m.scoreA+" - "+m.scoreB:"WO") : "vs"));
+      row.appendChild(el("div",{class:"m-vs"}, m.status==="FINISHED"||m.status==="WO" ? (m.scoreA!==null?m.scoreA+" - "+m.scoreB:(m.bye?"BYE":"WO")) : "vs"));
       row.appendChild(el("div",{class:"m-side"+(isWinnerB?" winner":""), style:isWinnerB?"color:var(--gold-bright);":""}, matchSideLabel(cat.code, m.sideB)));
       if(m.roundIndex===0 && m.sideA.type==="participant" && m.sideB.type==="participant" && m.sideA.participantId && m.sideB.participantId){
         const clubA = (regSummary(m.sideA.participantId)||{}).club;
@@ -3775,7 +3816,7 @@ async function applyScheduleTemplate(){
   let added = 0;
   SCHEDULE_PLAN.forEach(p=>{
     const m = planMatchFor(p);
-    if(!m || matchIsEmptyShell(m) || scheduleFor(m.id)) return;
+    if(!m || m.bye || matchIsEmptyShell(m) || scheduleFor(m.id)) return;
     if(scheduleOccupant(p.day, p.timeIndex, p.court)) return;
     SCHEDULE.push({ id:uid(), matchId:m.id, category:p.category, day:p.day, timeIndex:p.timeIndex, court:p.court });
     if(!m.status) m.status = "SCHEDULED";
@@ -4280,7 +4321,7 @@ async function mcReopen(catCode, match){
 function mcStatusBadge(status){
   const map = {
     SCHEDULED: ["b-list","Terjadwal"], CALLING: ["b-call","Dipanggil"], ON_COURT: ["b-onc","Berlangsung"],
-    FINISHED: ["b-ok","Selesai"], DELAYED: ["b-delay","Ditunda"], WO: ["b-wait","Walkover"], CANCELLED: ["b-reject","Dibatalkan"]
+    FINISHED: ["b-ok","Selesai"], DELAYED: ["b-delay","Ditunda"], WO: ["b-wait","Walkover"], BYE: ["b-ok","BYE"], CANCELLED: ["b-reject","Dibatalkan"]
   };
   const [cls,label] = map[status] || ["b-list", status||"Terjadwal"];
   return el("span",{class:"badge "+cls},[el("span",{class:"b-dot"}), label]);
@@ -4447,6 +4488,7 @@ function renderWoModal(){
 let loketRegNo = "";
 let loketFoundId = null;
 let loketReceipt = null; // {name, amount, method, newBalance, status}
+let loketPayMethod = "CASH"; // metode untuk pelunasan di Loket: CASH | TRANSFER
 function viewAdminLoket(){
   const wrap = el("div",{});
   wrap.appendChild(topbar("admin"));
@@ -4521,15 +4563,25 @@ function renderLoketCard(reg){
     const owed = regOwed(reg);
     c.appendChild(el("div",{class:"flag warn", style:"margin-top:8px;"},"Biaya pendaftaran belum lunas: tagihan "+rupiah(reg.payment.amountDue)+", diterima "+rupiah(reg.payment.amountPaid)+". Sisa "+rupiah(owed)+"."));
     let payAmt = String(owed);
+    const mf = el("div",{class:"field", style:"margin-top:8px;"}); mf.appendChild(el("label",{},"Diterima lewat"));
+    const mrow = el("div",{style:"display:flex;gap:8px;"});
+    const mBtns = {};
+    [["CASH","\ud83d\udcb5 Tunai"],["TRANSFER","\ud83c\udfe6 Transfer Rekening"]].forEach(([code,label])=>{
+      const b = el("button",{type:"button", class:"btn btn-sm "+(loketPayMethod===code?"btn-gold":"btn-outline"), style:"flex:1;"}, label);
+      b.addEventListener("click",()=>{ loketPayMethod = code; Object.keys(mBtns).forEach(k=>{ mBtns[k].className = "btn btn-sm "+(loketPayMethod===k?"btn-gold":"btn-outline"); }); });
+      mBtns[code]=b; mrow.appendChild(b);
+    });
+    mf.appendChild(mrow); c.appendChild(mf);
     const pf = el("div",{class:"field", style:"margin-top:8px;"}); pf.appendChild(el("label",{},"Nominal Diterima"));
     const pin = el("input",{type:"number", min:"1", value:payAmt}); pin.addEventListener("input",(e)=>{ payAmt = e.target.value; }); pf.appendChild(pin); c.appendChild(pf);
     c.appendChild(el("button",{class:"btn btn-gold btn-block", onclick: async ()=>{
       const amt = Number(payAmt);
       if(!Number.isInteger(amt) || amt<=0 || amt>owed){ showToast("Nominal harus 1 sampai "+rupiah(owed)+"."); return; }
       reg.payment.amountPaid = (Number(reg.payment.amountPaid)||0) + amt;
-      reg.payment.settlements = (reg.payment.settlements||[]).concat([{ amount: amt, at: nowIso(), note: "Pelunasan di Loket" }]);
+      const payMethodNow = loketPayMethod === "TRANSFER" ? "TRANSFER" : "CASH";
+      reg.payment.settlements = (reg.payment.settlements||[]).concat([{ amount: amt, at: nowIso(), method: payMethodNow, note: "Pelunasan di Loket ("+(payMethodNow==="TRANSFER"?"transfer":"tunai")+")" }]);
       await persistReg(reg);
-      loketReceipt = { name: reg.player1+" / "+reg.player2, amount: amt, label:"Pelunasan Biaya Pendaftaran", newBalance: reg.deposit ? reg.deposit.balance : 0, status: regOwed(reg)===0 ? "LUNAS" : "MASIH KURANG "+rupiah(regOwed(reg)) };
+      loketReceipt = { name: reg.player1+" / "+reg.player2, amount: amt, label:"Pelunasan Biaya Pendaftaran ("+(payMethodNow==="TRANSFER"?"Transfer":"Tunai")+")", newBalance: reg.deposit ? reg.deposit.balance : 0, status: regOwed(reg)===0 ? "LUNAS" : "MASIH KURANG "+rupiah(regOwed(reg)) };
       render();
     }},"Terima Pelunasan"));
   }
@@ -4801,6 +4853,19 @@ function renderBudgetEditModal(){
   return overlay;
 }
 
+/* Pemasukan biaya pendaftaran per metode. Pelunasan di Loket dihitung menurut metode yang dipilih admin
+   (data lama tanpa metode dianggap tunai); sisanya mengikuti metode pendaftaran awal. */
+function incomeSplit(list){
+  let cash = 0, transfer = 0;
+  list.forEach(r=>{
+    const sett = Array.isArray(r.settlements) ? r.settlements : [];
+    let settTotal = 0;
+    sett.forEach(x=>{ const a = Number(x.amount)||0; settTotal += a; if(x.method==="TRANSFER") transfer += a; else cash += a; });
+    const base = Math.max(0, (Number(r.paymentAmountPaid)||0) - settTotal);
+    if(r.paymentMethod==="CASH" || r.paymentMethod==="ONSITE") cash += base; else transfer += base;
+  });
+  return { cash, transfer };
+}
 function viewAdminFinance(){
   const wrap = el("div",{});
   wrap.appendChild(topbar("admin"));
@@ -4824,8 +4889,8 @@ function viewAdminFinance(){
   sec.appendChild(el("div",{class:"section-title"},"Rekap Pemasukan Registrasi"));
 
   const registeredList = INDEX.filter(r=>r.status==="REGISTERED");
-  const cashIncome = registeredList.filter(r=>r.paymentMethod==="CASH"||r.paymentMethod==="ONSITE").reduce((s,r)=>s+(r.paymentAmountPaid||0),0);
-  const transferIncome = registeredList.filter(r=>r.paymentMethod!=="CASH"&&r.paymentMethod!=="ONSITE").reduce((s,r)=>s+(r.paymentAmountPaid||0),0);
+  const split = incomeSplit(registeredList);
+  const cashIncome = split.cash, transferIncome = split.transfer;
   const totalPayment = cashIncome + transferIncome;
   const grid = el("div",{class:"stat-grid"});
   grid.appendChild(statCard("\ud83d\udcb5 Pemasukan Tunai", rupiah(cashIncome), true));
@@ -5369,7 +5434,7 @@ function viewReferee(){
     card.appendChild(el("div",{style:"font-size:12px;color:var(--ink-dim);margin-bottom:4px;"}, timeLabel(e.timeIndex, e.day)+" · Lap "+e.court+" · "+catByCode(e.category).name+" · "+(ROUND_LABELS[m.round]||m.round)+" #"+m.matchNo));
     const finished = m.status==="FINISHED" || m.status==="WO";
     card.appendChild(el("div",{style:"font-weight:700;font-size:14px;line-height:1.4;"}, [refSideName(m,"sideA"), el("span",{style:"color:var(--ink-faint);font-weight:400;"}," vs "), refSideName(m,"sideB")]));
-    if(finished) card.appendChild(el("div",{style:"margin-top:6px;color:var(--gold-bright);font-weight:700;"}, m.status==="WO" ? "WO" : "Selesai "+m.scoreA+" – "+m.scoreB));
+    if(finished) card.appendChild(el("div",{style:"margin-top:6px;color:var(--gold-bright);font-weight:700;"}, m.status==="WO" ? (m.bye?"BYE":"WO") : "Selesai "+m.scoreA+" – "+m.scoreB));
     else {
       const ready = m.sideA.type==="participant" && m.sideB.type==="participant";
       const ongoing = m.status==="ON_COURT" && m.liveScoring;
