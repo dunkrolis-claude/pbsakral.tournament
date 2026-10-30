@@ -9,6 +9,9 @@ const INDEX_COLUMNS =
   "id, reg_no, category, status, player1, player2, club, whatsapp, " +
   "payment_status, payment_amount_due, payment_amount_paid, deposit_initial, " +
   "deposit_balance, discount_amount, discount_note, is_demo, created_at, updated_at";
+// Tambahan: daftar pelunasan (metode tunai/transfer) untuk laporan keuangan. Bila sintaks ini ditolak,
+// daftar pendaftar tetap harus tampil, jadi ada cadangan tanpa kolom ini.
+const INDEX_COLUMNS_WITH_SETTLEMENTS = INDEX_COLUMNS + ", payment_settlements:payment->settlements";
 
 module.exports = async function handler(req, res) {
   if (req.method !== "GET") {
@@ -64,11 +67,16 @@ module.exports = async function handler(req, res) {
     }
 
     if (resource === "registrations_index") {
-      let query = supabase.from("registrations").select(INDEX_COLUMNS);
-      if (!isSuper(session)) {
-        query = query.eq("category", session.scope);
+      const run = (cols) => {
+        let q = supabase.from("registrations").select(cols);
+        if (!isSuper(session)) q = q.eq("category", session.scope);
+        return q;
+      };
+      let { data, error } = await run(INDEX_COLUMNS_WITH_SETTLEMENTS);
+      if (error) {
+        console.error("registrations_index with settlements failed, retrying without:", error.message);
+        ({ data, error } = await run(INDEX_COLUMNS));
       }
-      const { data, error } = await query;
       if (error) throw error;
       return sendJson(res, 200, { ok: true, data });
     }
