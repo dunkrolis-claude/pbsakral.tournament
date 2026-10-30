@@ -4235,6 +4235,44 @@ function renderSchedLogCard(){
   return card;
 }
 
+let scheduleViewMode = "grid";
+function renderSchedByHour(day){
+  const box = el("div",{class:"card", style:"padding:6px 12px;"});
+  const total = gridSlotsFor(day);
+  let any = false;
+  for(let idx=0; idx<total; idx++){
+    if(isBreakSlot(day, idx)){
+      box.appendChild(el("div",{style:"display:flex;gap:10px;padding:10px 0;border-top:1px solid var(--line);align-items:center;"},[
+        el("div",{style:"min-width:52px;font-weight:800;font-size:13px;color:var(--gold-bright);"}, timeLabel(idx,day)),
+        el("div",{style:"font-weight:800;color:var(--gold-bright);"}, "\ud83c\udf71 ISOMA \u2014 istirahat")
+      ]));
+      continue;
+    }
+    const items = [];
+    COURTS.forEach(court=>{
+      const occ = scheduleOccupant(day, idx, court);
+      if(!occ) return;
+      const m = matchById(occ.category, occ.matchId);
+      if(!m) return;
+      const cat = catByCode(occ.category);
+      const names = matchSideLabel(occ.category,m.sideA)+" vs "+matchSideLabel(occ.category,m.sideB);
+      items.push(el("div",{style:"display:flex;gap:8px;padding:3px 0;font-size:12.5px;align-items:baseline;"},[
+        el("span",{style:"min-width:38px;font-weight:800;"}, "Lap "+court),
+        el("span",{style:"min-width:92px;font-weight:700;"+schedCatStyle(occ.category)+"border-radius:6px;padding:1px 6px;"}, (cat?cat.name:occ.category)+" "+m.round+"#"+m.matchNo),
+        el("span",{style:"color:var(--ink-dim);"}, names)
+      ]));
+    });
+    if(!items.length) continue;
+    any = true;
+    box.appendChild(el("div",{style:"display:flex;gap:10px;padding:10px 0;border-top:1px solid var(--line);"},[
+      el("div",{style:"min-width:52px;font-weight:800;font-size:13px;"}, timeLabel(idx,day)),
+      el("div",{style:"flex:1;"}, items)
+    ]));
+  }
+  if(!any) box.appendChild(el("div",{style:"padding:12px 0;color:var(--ink-faint);font-size:12px;"},"Belum ada match terjadwal di hari ini."));
+  return box;
+}
+
 function viewAdminSchedule(){
   const wrap = el("div",{});
   wrap.appendChild(topbar("admin"));
@@ -4279,6 +4317,17 @@ function viewAdminSchedule(){
   });
   sec.appendChild(dayTabs);
 
+  const modeRow = el("div",{class:"tabs", style:"margin-bottom:10px;"});
+  [["grid","Grid lapangan"],["hour","Per jam"]].forEach(([k,l])=> modeRow.appendChild(el("button",{class: scheduleViewMode===k?"active":"", onclick:()=>{ scheduleViewMode=k; render(); }}, l)));
+  sec.appendChild(modeRow);
+  if(scheduleViewMode==="hour"){
+    sec.appendChild(renderSchedByHour(scheduleActiveDay));
+    sec.appendChild(renderSchedLogCard());
+    wrap.appendChild(sec);
+    if(moveMatchTarget) wrap.appendChild(renderMoveMatchModal());
+    if(compactPlan) wrap.appendChild(renderCompactModal());
+    return wrap;
+  }
   const scrollWrap = el("div",{class:"sched-scroll"});
   const table = el("table",{class:"sched-table"});
   const thead = el("tr",{});
