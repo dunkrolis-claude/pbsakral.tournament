@@ -4364,7 +4364,7 @@ function viewAdminSchedule(){
         if(m) kids.push(el("div",{class:"sc-sub"}, matchSideLabel(occ.category,m.sideA)+" vs "+matchSideLabel(occ.category,m.sideB)));
         if(ref) kids.push(el("div",{class:"sc-ref"}, "\ud83d\udc64 "+ref));
         cell = el("td",{},[el("div",{class:"sched-cell filled"+mvCls, style:"height:auto;min-height:44px;"+schedCatStyle(occ.category), onclick: mvClick || (()=>{ schedMove={category:occ.category, matchId:occ.matchId}; render(); })}, kids)]);
-      } else if(plan && !(planMatchFor(plan)||{}).bye){
+      } else if(plan && !(planMatchFor(plan)||{}).bye && !(planMatchFor(plan) && scheduleFor(planMatchFor(plan).id))){
         const m = planMatchFor(plan);
         let note = "menunggu drawing";
         if(m){
