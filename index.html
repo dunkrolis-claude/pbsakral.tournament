@@ -3830,28 +3830,57 @@ function pdfFit(doc, text, maxW){
 function pdfStamp(){ const d = new Date(); return "Dicetak "+String(d.getDate()).padStart(2,"0")+"/"+String(d.getMonth()+1).padStart(2,"0")+"/"+d.getFullYear()+" "+String(d.getHours()).padStart(2,"0")+":"+String(d.getMinutes()).padStart(2,"0"); }
 function pdfFileName(prefix, name){ return prefix+"-"+String(name).replace(/[^A-Za-z0-9]+/g,"-").replace(/^-|-$/g,"")+".pdf"; }
 
+const PDF_CAT_RGB = { PRIME:[212,175,55], CORE:[201,118,47], RISING:[59,143,212], QUEENS:[212,59,131] };
+const PDF_INK = [11,10,8], PDF_GOLD = [212,175,55];
+function pdfCatRgb(code){ return PDF_CAT_RGB[code] || [120,120,120]; }
+function pdfTint(rgb, k){ return rgb.map(v=>Math.round(255-(255-v)*k)); } // k 0..1: 0 putih, 1 warna penuh
+function pdfTextOn(rgb){ return (rgb[0]*0.299+rgb[1]*0.587+rgb[2]*0.114) > 150 ? [20,20,20] : [255,255,255]; }
+function pdfHeaderBand(doc, W, title, subtitle, cat){
+  const rgb = pdfCatRgb(cat.code);
+  doc.setFillColor(...PDF_INK); doc.rect(0, 0, W, 26, "F");
+  doc.setFillColor(...rgb); doc.rect(0, 26, W, 1.6, "F");
+  try{ doc.addImage(LOGO_EVENT, "PNG", 8, 3, 20, 20); }catch(e){}
+  doc.setTextColor(255); doc.setFont("helvetica","bold"); doc.setFontSize(15);
+  doc.text(pdfTxt("1 DEKADE PB SAKRAL BADMINTON TOURNAMENT 2026"), 32, 11);
+  doc.setFontSize(10.5); doc.setTextColor(...PDF_GOLD);
+  doc.text(pdfTxt(title), 32, 18);
+  doc.setFont("helvetica","normal"); doc.setFontSize(8); doc.setTextColor(190);
+  doc.text(pdfTxt(subtitle), 32, 23.2);
+  // chip kategori di kanan
+  const chip = (cat.name+"  "+cat.level).toUpperCase();
+  doc.setFont("helvetica","bold"); doc.setFontSize(9);
+  const cw = doc.getTextWidth(pdfTxt(chip)) + 10;
+  doc.setFillColor(...rgb); doc.roundedRect(W-8-cw, 7.5, cw, 9, 4.5, 4.5, "F");
+  doc.setTextColor(...pdfTextOn(rgb)); doc.text(pdfTxt(chip), W-8-cw/2, 13.4, {align:"center"});
+  doc.setTextColor(0);
+}
+function pdfFooters(doc, W, H, note){
+  const n = doc.getNumberOfPages();
+  for(let i=1;i<=n;i++){
+    doc.setPage(i);
+    doc.setFillColor(...PDF_INK); doc.rect(0, H-7, W, 7, "F");
+    doc.setFont("helvetica","normal"); doc.setFontSize(7); doc.setTextColor(200);
+    doc.text(pdfTxt(note||"Dewi Sport Hall Karawang  |  pbsakraltournament.my.id"), 8, H-2.6);
+    doc.text(pdfTxt(pdfStamp()+"   |   Hal "+i+"/"+n), W-8, H-2.6, {align:"right"});
+  }
+  doc.setTextColor(0);
+}
+
 function buildBracketPdf(JsPDF, catCode){
   const cat = catByCode(catCode);
+  const rgb = pdfCatRgb(catCode);
   const matches = bracketMatchesFor(catCode);
   const rounds = roundNamesFor(cat.quota).map(rn=>({rn, list: matches.filter(m=>m.round===rn).sort((a,b)=>a.matchNo-b.matchNo)})).filter(r=>r.list.length);
   const n1 = rounds.length ? rounds[0].list.length : 1;
   const fmt = n1>16 ? "a3" : "a4";
   const doc = new JsPDF({orientation:"landscape", unit:"mm", format:fmt});
   const W = doc.internal.pageSize.getWidth(), H = doc.internal.pageSize.getHeight();
-  const M = 10, headH = 28, footH = 7;
-  doc.setFont("helvetica","bold"); doc.setFontSize(fmt==="a3"?17:14);
-  doc.text(pdfTxt("1 DEKADE PB SAKRAL BADMINTON TOURNAMENT 2026"), M, M+6);
-  doc.setFontSize(fmt==="a3"?13:11);
-  doc.text(pdfTxt("Bracket "+cat.name+" ("+cat.level+")"), M, M+13);
-  doc.setFont("helvetica","normal"); doc.setFontSize(8); doc.setTextColor(110);
-  doc.text(pdfTxt("Dewi Sport Hall Karawang - 31 Okt & 1 Nov 2026"), M, M+18);
-  doc.text(pdfStamp(), W-M, M+18, {align:"right"});
-  doc.setTextColor(0);
-  const topY = M+headH, availH = H-topY-M-footH;
-  const gap = 8, colW = (W-2*M-(rounds.length-1)*gap)/Math.max(1,rounds.length);
+  pdfHeaderBand(doc, W, "BRACKET "+cat.name.toUpperCase()+" ("+cat.level+")", "Dewi Sport Hall Karawang  |  31 Okt - 1 Nov 2026  |  Sistem gugur (knockout)", cat);
+  const M = 9, topY = 40, footH = 12;
+  const availH = H-topY-footH;
+  const gap = 9, colW = (W-2*M-(rounds.length-1)*gap)/Math.max(1,rounds.length);
   const slotH = availH/n1, boxH = Math.min(slotH*0.86, 12);
   const fs = Math.max(5, Math.min(8, boxH*0.5/0.3528*0.62));
-  // pusat vertikal tiap match
   const centers = [];
   rounds.forEach((r,ri)=>{
     centers[ri] = r.list.map((m,j)=>{
@@ -3860,107 +3889,126 @@ function buildBracketPdf(JsPDF, catCode){
       return (a!==undefined && b!==undefined) ? (a+b)/2 : (a!==undefined ? a : b);
     });
   });
-  doc.setDrawColor(150); doc.setLineWidth(0.25);
   rounds.forEach((r,ri)=>{
     const x = M + ri*(colW+gap);
-    doc.setFont("helvetica","bold"); doc.setFontSize(9); doc.setTextColor(60);
-    doc.text(pdfTxt(ROUND_LABELS[r.rn]), x, topY-3);
+    const isFinal = r.rn==="F";
+    // judul babak: pil berwarna
+    doc.setFillColor(...(isFinal?PDF_GOLD:rgb)); doc.roundedRect(x, topY-9, colW, 6, 2, 2, "F");
+    doc.setFont("helvetica","bold"); doc.setFontSize(8.5); doc.setTextColor(...pdfTextOn(isFinal?PDF_GOLD:rgb));
+    doc.text(pdfTxt(ROUND_LABELS[r.rn].toUpperCase()), x+colW/2, topY-4.9, {align:"center"});
     doc.setTextColor(0);
     r.list.forEach((m,j)=>{
       const cy = centers[ri][j], y = cy-boxH/2;
-      // konektor ke babak berikutnya
       if(ri < rounds.length-1){
         const ny = centers[ri+1][Math.floor(j/2)];
         const mx = x+colW+gap/2;
+        doc.setDrawColor(...rgb); doc.setLineWidth(0.4);
         doc.line(x+colW, cy, mx, cy); doc.line(mx, cy, mx, ny); doc.line(mx, ny, x+colW+gap, ny);
       }
-      if(m.bye){ doc.setFillColor(238,238,238); doc.rect(x, y, colW, boxH, "FD"); } else { doc.rect(x, y, colW, boxH); }
-      doc.line(x, cy, x+colW, cy);
+      // kotak
+      if(m.bye){ doc.setFillColor(236,236,236); doc.setDrawColor(190); }
+      else if(isFinal){ doc.setFillColor(...pdfTint(PDF_GOLD,0.22)); doc.setDrawColor(...PDF_GOLD); }
+      else { doc.setFillColor(255,255,255); doc.setDrawColor(...pdfTint(rgb,0.55)); }
+      doc.setLineWidth(isFinal?0.7:0.3);
+      doc.rect(x, y, colW, boxH, "FD");
+      if(!m.bye){ doc.setFillColor(...(isFinal?PDF_GOLD:rgb)); doc.rect(x, y, 1.3, boxH, "F"); }
+      doc.setDrawColor(215); doc.setLineWidth(0.2); doc.line(x+1.3, cy, x+colW, cy);
       const win = (side)=> m.winnerParticipantId && side.type==="participant" && side.participantId===m.winnerParticipantId;
       const done = (m.status==="FINISHED") && !m.bye;
-      [[m.sideA, y+boxH*0.36, m.scoreA],[m.sideB, y+boxH*0.86, m.scoreB]].forEach(([side, ty, sc])=>{
+      [[m.sideA, y, m.scoreA],[m.sideB, cy, m.scoreB]].forEach(([side, ry, sc])=>{
         const label = matchSideLabel(catCode, side);
         const isBye = label==="BYE";
-        doc.setFont("helvetica", win(side) ? "bold" : (isBye ? "italic" : "normal")); doc.setFontSize(fs);
-        doc.setTextColor(isBye?140:0);
-        doc.text(pdfFit(doc, label, colW-(done?12:11)), x+1.2, ty);
-        doc.setTextColor(0);
-        if(done && sc!=null){ doc.setFont("helvetica","bold"); doc.text(pdfTxt(sc), x+colW-1.2, ty, {align:"right"}); }
+        const winner = win(side) && !m.bye;
+        if(winner){ doc.setFillColor(...pdfTint(rgb,0.28)); doc.rect(x+1.3, ry+0.15, colW-1.3, boxH/2-0.3, "F"); }
+        const ty = ry + boxH*0.36;
+        doc.setFont("helvetica", winner ? "bold" : (isBye ? "italic" : "normal")); doc.setFontSize(fs);
+        doc.setTextColor(isBye?140:20);
+        doc.text(pdfFit(doc, label, colW-(done?13:12)), x+2.6, ty);
+        if(done && sc!=null){ doc.setFont("helvetica","bold"); doc.setTextColor(...(winner?rgb.map(v=>Math.round(v*0.7)):[90,90,90])); doc.text(pdfTxt(sc), x+colW-1.2, ty, {align:"right"}); }
       });
-      doc.setFont("helvetica","normal"); doc.setFontSize(Math.max(4.5, fs-2)); doc.setTextColor(130);
-      if(!done) doc.text("#"+m.matchNo, x+colW-1.2, y+boxH*0.36, {align:"right"});
       doc.setTextColor(0);
+      if(!done && !m.bye){
+        doc.setFont("helvetica","bold"); doc.setFontSize(Math.max(4.5, fs-2)); doc.setTextColor(...rgb.map(v=>Math.round(v*0.75)));
+        doc.text("#"+m.matchNo, x+colW-1.2, y+boxH*0.34, {align:"right"});
+        doc.setTextColor(0);
+      }
     });
   });
-  doc.setFontSize(7); doc.setTextColor(120);
-  if(matches.some(m=>m.bye)) doc.text(pdfTxt("Pertandingan BYE otomatis maju ke babak berikutnya."), M, H-M+2);
+  doc.setLineWidth(0.2);
+  pdfFooters(doc, W, H, matches.some(m=>m.bye) ? "Pertandingan BYE otomatis maju ke babak berikutnya  |  Dewi Sport Hall Karawang" : null);
   return doc;
 }
 
 function buildSchedulePdf(JsPDF, catCodes){
   const doc = new JsPDF({orientation:"landscape", unit:"mm", format:"a4"});
   const W = doc.internal.pageSize.getWidth(), H = doc.internal.pageSize.getHeight();
-  const M = 10, rowH = 7.4;
-  const cols = [ {k:"jam",w:20}, {k:"lap",w:16}, {k:"babak",w:36}, {k:"a",w:0}, {k:"b",w:0}, {k:"skor",w:26} ];
+  const M = 8, rowH = 7.6;
+  const cols = [ {k:"jam",w:22}, {k:"lap",w:15}, {k:"babak",w:38}, {k:"a",w:0}, {k:"b",w:0}, {k:"skor",w:27} ];
   const fixed = cols.reduce((s,c)=>s+c.w,0), flex = (W-2*M-fixed)/2;
   cols.forEach(c=>{ if(c.w===0) c.w = flex; });
   let first = true, any = false;
+  let lastCat = null;
   catCodes.forEach(code=>{
-    const cat = catByCode(code);
+    const cat = catByCode(code), rgb = pdfCatRgb(code);
     TOURNAMENT_DAYS.forEach(d=>{
       const entries = SCHEDULE.filter(x=>x.category===code && x.day===d.day);
       if(!entries.length) return;
       any = true;
       if(!first) doc.addPage(); first = false;
       const header = ()=>{
-        doc.setFont("helvetica","bold"); doc.setFontSize(14); doc.setTextColor(0);
-        doc.text(pdfTxt("1 DEKADE PB SAKRAL BADMINTON TOURNAMENT 2026"), M, M+6);
-        doc.setFontSize(11); doc.text(pdfTxt("Jadwal "+cat.name+" ("+cat.level+") - "+d.label), M, M+13);
-        doc.setFont("helvetica","normal"); doc.setFontSize(8); doc.setTextColor(110);
-        doc.text(pdfTxt("Dewi Sport Hall Karawang - jam adalah rencana (perkiraan, bisa lebih cepat)"), M, M+18);
-        doc.text(pdfStamp(), W-M, M+18, {align:"right"});
-        doc.setTextColor(0);
-        let x = M, y = M+22;
-        doc.setFillColor(40,40,40); doc.setTextColor(255); doc.setFont("helvetica","bold"); doc.setFontSize(8.5);
-        doc.rect(M, y, W-2*M, rowH, "F");
-        [["Jam"],["Lap"],["Babak"],["Pasangan 1"],["Pasangan 2"],["Skor"]].forEach((c,i)=>{ doc.text(c[0], x+1.5, y+rowH*0.68); x += cols[i].w; });
+        pdfHeaderBand(doc, W, "JADWAL PERTANDINGAN  -  "+d.label.toUpperCase(), "Jam adalah rencana (perkiraan, bisa lebih cepat)  |  Datang 1 jam sebelum jadwal  |  Dewi Sport Hall Karawang", cat);
+        const y = 33;
+        let x = M;
+        doc.setFillColor(...rgb); doc.rect(M, y, W-2*M, rowH, "F");
+        doc.setTextColor(...pdfTextOn(rgb)); doc.setFont("helvetica","bold"); doc.setFontSize(8.5);
+        ["JAM","LAP","BABAK","PASANGAN 1","PASANGAN 2","SKOR"].forEach((c,i)=>{ doc.text(c, x+2, y+rowH*0.67); x += cols[i].w; });
         doc.setTextColor(0);
         return y+rowH;
       };
       let y = header();
-      // susun baris per slot, termasuk jeda ISOMA
       const rows = [];
       const iso = isomaOf(d.day);
       for(let idx=0; idx<gridSlotsFor(d.day); idx++){
-        if(isBreakSlot(d.day, idx)){ if(idx===iso.start) rows.push({brk:"ISOMA - istirahat "+timeLabel(iso.start,d.day)+" - "+timeLabel(iso.start+iso.len,d.day)}); continue; }
+        if(isBreakSlot(d.day, idx)){ if(idx===iso.start) rows.push({brk:"ISOMA  -  ISTIRAHAT  "+timeLabel(iso.start,d.day)+" - "+timeLabel(iso.start+iso.len,d.day)}); continue; }
         entries.filter(x=>x.timeIndex===idx).sort((a,b)=>a.court<b.court?-1:1).forEach(e=>{
           const m = matchById(code, e.matchId); if(m) rows.push({idx, e, m});
         });
       }
-      let zebra = false;
+      let zebra = false, prevIdx = null;
       rows.forEach(r=>{
-        if(y+rowH > H-M-6){ doc.addPage(); y = header(); zebra = false; }
+        if(y+rowH > H-7-4){ doc.addPage(); y = header(); zebra = false; }
         let x = M;
+        const big = r.m && (r.m.round==="QF"||r.m.round==="SF"||r.m.round==="F");
         if(r.brk){
-          doc.setFillColor(250,235,190); doc.rect(M, y, W-2*M, rowH, "F");
-          doc.setFont("helvetica","bold"); doc.setFontSize(8.5); doc.text(pdfTxt(r.brk), M+(W-2*M)/2, y+rowH*0.68, {align:"center"});
+          doc.setFillColor(...PDF_GOLD); doc.rect(M, y, W-2*M, rowH, "F");
+          doc.setFont("helvetica","bold"); doc.setFontSize(9); doc.setTextColor(...PDF_INK);
+          doc.text(pdfTxt(r.brk), W/2, y+rowH*0.67, {align:"center"}); doc.setTextColor(0);
         } else {
-          if(zebra){ doc.setFillColor(244,244,244); doc.rect(M, y, W-2*M, rowH, "F"); }
-          doc.setFont("helvetica","bold"); doc.setFontSize(8.5);
-          doc.text(timeLabel(r.idx, d.day), x+1.5, y+rowH*0.68); x += cols[0].w;
-          doc.text(pdfTxt(r.e.court), x+1.5, y+rowH*0.68); x += cols[1].w;
+          if(r.m.round==="F"){ doc.setFillColor(...pdfTint(PDF_GOLD,0.35)); doc.rect(M, y, W-2*M, rowH, "F"); }
+          else if(big){ doc.setFillColor(...pdfTint(rgb,0.2)); doc.rect(M, y, W-2*M, rowH, "F"); }
+          else if(zebra){ doc.setFillColor(...pdfTint(rgb,0.07)); doc.rect(M, y, W-2*M, rowH, "F"); }
+          // aksen warna di tepi kiri
+          doc.setFillColor(...rgb); doc.rect(M, y, 1.4, rowH, "F");
+          // jam (hanya tampil penuh saat berganti jam)
+          doc.setFont("helvetica","bold"); doc.setFontSize(9); doc.setTextColor(...rgb.map(v=>Math.round(v*0.7)));
+          doc.text(timeLabel(r.idx, d.day), x+3.2, y+rowH*0.67); x += cols[0].w;
+          // lapangan: kotak gelap berhuruf emas
+          doc.setFillColor(...PDF_INK); doc.roundedRect(x+2, y+1.3, 7, rowH-2.6, 1.4, 1.4, "F");
+          doc.setTextColor(...PDF_GOLD); doc.setFontSize(8.5); doc.text(pdfTxt(r.e.court), x+5.5, y+rowH*0.67, {align:"center"}); x += cols[1].w;
+          doc.setTextColor(20); doc.setFont("helvetica", big?"bold":"normal"); doc.setFontSize(8.5);
+          doc.text(pdfFit(doc, ROUND_LABELS[r.m.round]+" #"+r.m.matchNo, cols[2].w-3), x+2, y+rowH*0.67); x += cols[2].w;
           doc.setFont("helvetica","normal");
-          doc.text(pdfFit(doc, ROUND_LABELS[r.m.round]+" #"+r.m.matchNo, cols[2].w-3), x+1.5, y+rowH*0.68); x += cols[2].w;
-          doc.text(pdfFit(doc, matchSideLabel(code, r.m.sideA), cols[3].w-3), x+1.5, y+rowH*0.68); x += cols[3].w;
-          doc.text(pdfFit(doc, matchSideLabel(code, r.m.sideB), cols[4].w-3), x+1.5, y+rowH*0.68); x += cols[4].w;
-          doc.setDrawColor(190); doc.rect(x+1.5, y+1.4, cols[5].w-3, rowH-2.8);
+          doc.text(pdfFit(doc, matchSideLabel(code, r.m.sideA), cols[3].w-3), x+2, y+rowH*0.67); x += cols[3].w;
+          doc.text(pdfFit(doc, matchSideLabel(code, r.m.sideB), cols[4].w-3), x+2, y+rowH*0.67); x += cols[4].w;
+          doc.setDrawColor(...pdfTint(rgb,0.6)); doc.setLineWidth(0.3); doc.setFillColor(255,255,255); doc.roundedRect(x+2, y+1.3, cols[5].w-4, rowH-2.6, 1, 1, "FD");
         }
-        doc.setDrawColor(215); doc.line(M, y+rowH, W-M, y+rowH);
-        y += rowH; zebra = !zebra;
+        doc.setDrawColor(228); doc.setLineWidth(0.15); doc.line(M, y+rowH, W-M, y+rowH);
+        y += rowH; zebra = !zebra; prevIdx = r.idx;
       });
     });
   });
-  if(!any){ doc.setFontSize(12); doc.text("Belum ada jadwal untuk level ini.", M, M+10); }
+  if(!any){ pdfHeaderBand(doc, W, "JADWAL PERTANDINGAN", "Belum ada jadwal untuk level ini", catByCode(catCodes[0])); }
+  pdfFooters(doc, W, H, null);
   return doc;
 }
 
