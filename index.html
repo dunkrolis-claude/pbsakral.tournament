@@ -1244,7 +1244,9 @@ function buildMessage(type, reg, extra){
   const base = buildMessageBase(type, reg, extra);
   if(type==="MATCH_SCHEDULE_INFO"){
     const cat = catByCode(reg.category);
-    return base + `\n\nPantau antrean, bagan & hasil: ${statusLinkFor(reg.regNo)}\n\nBuka link sekali selagi ada sinyal supaya tersimpan di HP.`;
+    const lnk = statusLinkFor(reg.regNo);
+    if(base.includes(lnk)) return base + `\n\nBuka link sekali selagi ada sinyal supaya tersimpan di HP.`;
+    return base + `\n\nPantau antrean, bagan & hasil: ${lnk}\n\nBuka link sekali selagi ada sinyal supaya tersimpan di HP.`;
   }
   return base;
 }
@@ -1266,6 +1268,7 @@ function buildMessageBase(type, reg, extra){
     case "PAYMENT_PROOF_SUBMITTED":
       return `Bukti pembayaran untuk ${displayCode(reg.regNo)} telah kami terima dan sedang diverifikasi panitia.`;
     case "PAYMENT_VERIFIED":
+      if(regOwed(reg)>0){ return `Halo ${pairName},\n\nPendaftaran kamu sudah diterima panitia.\nKategori: ${cat.name}\nNomor registrasi: ${displayCode(reg.regNo)}\n\nSisa biaya pendaftaran ${rupiah(regOwed(reg))} dibayar tunai di Loket saat hari-H, bersama deposit kok Rp${DEPOSIT_FEE.toLocaleString("id-ID")}/pasangan.`; }
       return `Halo ${pairName},\n\nPembayaran registrasi kamu sudah kami terima dan berhasil diverifikasi. Statusnya sekarang: LUNAS \u2705\n\nKategori: ${cat.name}\nNomor registrasi: ${displayCode(reg.regNo)}\n\nDeposit kok Rp${DEPOSIT_FEE.toLocaleString("id-ID")}/pasangan dibayar tunai langsung ke panitia saat hari-H. Jadwal pertandingan akan kami infokan menyusul setelah drawing & technical meeting selesai.`;
     case "MATCH_SCHEDULE_INFO": {
       const myMatches = participantMatches(reg.id, reg.category);
@@ -2462,6 +2465,7 @@ function adminTabs(active){
     ["admin-dashboard","Dashboard"],
     ["admin-list","Pendaftar"],
     ["admin-participants","Peserta"],
+    ["admin-rekap","Rekap Bayar"],
     ["admin-drawing","Drawing"],
     ["admin-bracket","Bracket"],
     ["admin-schedule","Jadwal"],
@@ -3389,6 +3393,113 @@ function downloadParticipants(catCode){
 function downloadButton(catCode){
   const n = INDEX.filter(r=>r.status==="REGISTERED" && (catCode==="ALL" || r.category===catCode)).length;
   return el("button",{class:"btn btn-outline btn-sm", onclick:()=>downloadParticipants(catCode)}, "Unduh Data Peserta (CSV) \u00b7 "+n);
+}
+
+/* ============ ADMIN: REKAP PEMBAYARAN (hari-H) ============ */
+let rekapCat = "ALL", rekapOnlyUnpaid = false, rekapQuery = "";
+/* Status bayar dihitung dari uang yang benar-benar diterima, bukan dari label PAID. */
+function payRecap(r){
+  const due = Number(r.paymentAmountDue)||0, paid = Number(r.paymentAmountPaid)||0;
+  const owedReg = Math.max(0, due - paid);
+  const depIn = Number(r.depositInitial)||0, depBal = Number(r.depositBalance)||0;
+  const depReceived = depIn > 0;
+  const depMissing = depReceived ? 0 : DEPOSIT_FEE;
+  const kokUsed = depReceived ? Math.max(0, depIn - depBal) : 0;
+  const depDebt = depReceived && depBal < 0 ? -depBal : 0;
+  const totalKurang = owedReg + depMissing + depDebt;
+  return { due, paid, owedReg, depReceived, depIn, depBal, kokUsed, depDebt, depMissing, totalKurang, lunas: totalKurang === 0 };
+}
+function rekapRows(catCode, onlyUnpaid, query){
+  const q = String(query||"").trim().toLowerCase();
+  return INDEX.filter(r=>r.status==="REGISTERED" && !r.isDemo && (catCode==="ALL" || r.category===catCode))
+    .filter(r=> !q || [r.regNo,r.player1,r.player2,r.club].join(" ").toLowerCase().includes(q))
+    .map(r=>({ r, p: payRecap(r) }))
+    .filter(x=> !onlyUnpaid || !x.p.lunas)
+    .sort((a,b)=> String(a.r.category).localeCompare(String(b.r.category)) || String(a.r.regNo).localeCompare(String(b.r.regNo)));
+}
+function rekapCsv(catCode, onlyUnpaid, query){
+  const esc = (v)=>{ v = String(v==null?"":v); return /[",\n\r;]/.test(v) ? '"'+v.replace(/"/g,'""')+'"' : v; };
+  const rows = rekapRows(catCode, onlyUnpaid, query);
+  const lines = [["Kategori","Kode","Pemain 1","Pemain 2","Klub","Biaya Daftar","Diskon","Diterima","Sisa Daftar","Deposit Diterima","Kok Terpakai","Saldo Deposit","Total Kurang","Status"].map(esc).join(",")];
+  rows.forEach(({r,p})=> lines.push([catByCode(r.category).name, displayCode(r.regNo), r.player1, r.player2, r.club, p.due, r.discountAmount||0, p.paid, p.owedReg, p.depIn, p.kokUsed, p.depReceived?p.depBal:0, p.totalKurang, p.lunas?"LUNAS":"BELUM LUNAS"].map(esc).join(",")));
+  return { csv: "﻿"+lines.join("\r\n")+"\r\n", count: rows.length };
+}
+function downloadRekap(){
+  const { csv, count } = rekapCsv(rekapCat, rekapOnlyUnpaid, rekapQuery);
+  if(!count){ showToast("Tidak ada data untuk diunduh."); return; }
+  const blob = new Blob([csv], {type:"text/csv;charset=utf-8"});
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url; a.download = "rekap-bayar-"+(rekapCat==="ALL"?"semua":rekapCat.toLowerCase())+"-"+nowIso().slice(0,10)+".csv";
+  document.body.appendChild(a); a.click(); document.body.removeChild(a);
+  setTimeout(()=>URL.revokeObjectURL(url), 1000);
+  showToast(count+" baris diunduh.");
+}
+function viewAdminRekap(){
+  const wrap = el("div",{});
+  wrap.appendChild(topbar("admin"));
+  const sec = el("div",{class:"section"});
+  sec.appendChild(adminTabs("admin-rekap"));
+  sec.appendChild(el("div",{class:"section-title"},"Rekap Pembayaran Peserta"));
+  sec.appendChild(el("div",{style:"color:var(--ink-dim);font-size:12.5px;margin-bottom:10px;"},
+    "Total Kurang = sisa biaya daftar + deposit kok Rp"+DEPOSIT_FEE.toLocaleString("id-ID")+" yang belum diterima + minus deposit. LUNAS hanya jika Total Kurang = 0. Ketuk baris untuk terima pembayaran di Loket."));
+  const catTabs = el("div",{class:"tabs"});
+  ["ALL",...META.categories.map(c=>c.code)].forEach(code=>{
+    catTabs.appendChild(el("button",{class: rekapCat===code?"active":"", onclick:()=>{ rekapCat=code; render(); }}, code==="ALL"?"Semua":catByCode(code).name));
+  });
+  sec.appendChild(catTabs);
+
+  const bar = el("div",{style:"display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin:8px 0 10px;"});
+  const sb2 = el("input",{placeholder:"Cari kode / nama / PB", value: rekapQuery, style:inputStyle()+"flex:1;min-width:160px;"});
+  sb2.addEventListener("change",(e)=>{ rekapQuery = e.target.value; render(); });
+  sb2.addEventListener("keydown",(e)=>{ if(e.key==="Enter"){ rekapQuery = e.target.value; render(); } });
+  bar.appendChild(sb2);
+  bar.appendChild(el("button",{class: "btn btn-sm "+(rekapOnlyUnpaid?"btn-gold":"btn-outline"), onclick:()=>{ rekapOnlyUnpaid = !rekapOnlyUnpaid; render(); }}, rekapOnlyUnpaid ? "Hanya belum lunas ✓" : "Hanya belum lunas"));
+  bar.appendChild(el("button",{class:"btn btn-outline btn-sm", onclick:downloadRekap},"Unduh CSV"));
+  sec.appendChild(bar);
+
+  const all = rekapRows(rekapCat, false, rekapQuery);
+  const rows = rekapOnlyUnpaid ? all.filter(x=>!x.p.lunas) : all;
+  const nLunas = all.filter(x=>x.p.lunas).length;
+  const sum = (f)=> rows.reduce((s,x)=>s+f(x.p),0);
+  const grid = el("div",{class:"stat-grid"});
+  grid.appendChild(statCard("Peserta", String(all.length)+" ("+nLunas+" lunas)", true));
+  grid.appendChild(statCard("Belum Lunas", String(all.length-nLunas), true));
+  grid.appendChild(statCard("Total Kurang", rupiah(all.reduce((s,x)=>s+x.p.totalKurang,0)), true));
+  grid.appendChild(statCard("Kok Terpakai", rupiah(all.reduce((s,x)=>s+x.p.kokUsed,0)), true));
+  sec.appendChild(grid);
+
+  if(rows.length===0){
+    sec.appendChild(el("div",{class:"empty", style:"margin-top:12px;"}, rekapOnlyUnpaid ? "Semua peserta di sini sudah lunas." : "Belum ada peserta."));
+  } else {
+    const box = el("div",{style:"overflow-x:auto;margin-top:12px;border:1px solid var(--line);border-radius:10px;"});
+    const tbl = el("table",{style:"border-collapse:collapse;width:100%;font-size:12px;min-width:880px;"});
+    const th = (t,al)=> el("th",{style:"text-align:"+(al||"left")+";padding:8px;border-bottom:1px solid var(--line);color:var(--ink-faint);white-space:nowrap;background:var(--bg-elev);"},t);
+    const hr = el("tr",{});
+    [["Kode"],["Pemain"],["Biaya","right"],["Diterima","right"],["Sisa Daftar","right"],["Deposit","right"],["Kok Terpakai","right"],["Saldo","right"],["Total Kurang","right"],["Status"]].forEach(([t,al])=> hr.appendChild(th(t,al)));
+    tbl.appendChild(el("thead",{},hr));
+    const tb = el("tbody",{});
+    const td = (c,al,st)=> el("td",{style:"padding:8px;border-bottom:1px solid var(--line);text-align:"+(al||"left")+";"+(st||"")},c);
+    rows.forEach(({r,p})=>{
+      const tr = el("tr",{style:"cursor:pointer;", onclick:()=>{ loketRegNo = r.regNo; loketFoundId = r.id; ensureRegLoaded(r.id); nav("admin-loket"); }});
+      tr.appendChild(td(displayCode(r.regNo),"left","white-space:nowrap;"));
+      tr.appendChild(td([el("div",{style:"font-weight:700;"},r.player1+" / "+r.player2), el("div",{style:"color:var(--ink-faint);font-size:11px;"},(rekapCat==="ALL"?catByCode(r.category).name+" · ":"")+r.club)]));
+      tr.appendChild(td(rupiah(p.due),"right"));
+      tr.appendChild(td(rupiah(p.paid),"right"));
+      tr.appendChild(td(rupiah(p.owedReg),"right", p.owedReg>0?"color:var(--danger);font-weight:700;":""));
+      tr.appendChild(td(p.depReceived?rupiah(p.depIn):"belum","right", p.depReceived?"":"color:var(--danger);"));
+      tr.appendChild(td(rupiah(p.kokUsed),"right"));
+      tr.appendChild(td(p.depReceived?rupiah(p.depBal):"-","right", p.depBal<0?"color:var(--danger);":""));
+      tr.appendChild(td(rupiah(p.totalKurang),"right", p.totalKurang>0?"color:var(--danger);font-weight:800;":"color:var(--ok);"));
+      tr.appendChild(td(el("span",{class:"badge "+(p.lunas?"b-ok":"b-wait")},[el("span",{class:"b-dot"}), p.lunas?"LUNAS":"BELUM LUNAS"])));
+      tb.appendChild(tr);
+    });
+    tbl.appendChild(tb);
+    box.appendChild(tbl);
+    sec.appendChild(box);
+  }
+  wrap.appendChild(sec);
+  return wrap;
 }
 
 /* ============ ADMIN: DRAWING (Phase 2) ============ */
@@ -6213,6 +6324,7 @@ function render(){
     case "admin-manual-entry": view = adminSession? viewAdminManualEntry() : viewAdminLogin(); break;
     case "admin-detail": view = adminSession? viewAdminDetail(route.params) : viewAdminLogin(); break;
     case "admin-participants": view = adminSession? viewAdminParticipants() : viewAdminLogin(); break;
+    case "admin-rekap": view = adminSession? viewAdminRekap() : viewAdminLogin(); break;
     case "admin-drawing": view = adminSession? viewAdminDrawing() : viewAdminLogin(); break;
     case "admin-bracket": view = adminSession? viewAdminBracket() : viewAdminLogin(); break;
     case "admin-schedule": view = adminSession? viewAdminSchedule() : viewAdminLogin(); break;
