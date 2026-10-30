@@ -2424,6 +2424,7 @@ function renderPublicJadwal(){
     lvTabs.appendChild(el("button",{class: publicJadwalCat===code?"active":"", onclick:()=>{ publicJadwalCat=code; render(); }}, label));
   });
   sec.appendChild(lvTabs);
+  sec.appendChild(el("div",{style:"margin:0 0 10px;"},[el("button",{class:"btn btn-outline btn-sm", onclick:()=>downloadPdf("schedule", publicJadwalCat==="ALL" ? META.categories.map(c=>c.code) : [publicJadwalCat])}, "\u2b07 Unduh PDF Jadwal "+(publicJadwalCat==="ALL" ? "(semua level)" : catByCode(publicJadwalCat).name))]));
 
   const scrollWrap = el("div",{class:"sched-scroll"});
   const table = el("table",{class:"sched-table"});
@@ -2465,6 +2466,7 @@ function renderPublicBagan(){
     catTabs.appendChild(el("button",{class: publicLiveCat===cat.code?"active":"", onclick:()=>{ publicLiveCat=cat.code; render(); }}, cat.name));
   });
   sec.appendChild(catTabs);
+  sec.appendChild(el("div",{style:"margin:0 0 10px;"},[el("button",{class:"btn btn-outline btn-sm", onclick:()=>downloadPdf("bracket",[publicLiveCat])}, "\u2b07 Unduh PDF Bracket "+catByCode(publicLiveCat).name)]));
 
   const cat = catByCode(publicLiveCat);
   const matches = MATCHES[cat.code] || [];
@@ -3805,6 +3807,185 @@ function drawBracketSvgLines(catCode, treeId, svgId){
   });
 }
 
+/* ===== Unduh PDF: bracket & jadwal per level (jsPDF dimuat saat dibutuhkan dari /vendor) ===== */
+let JSPDF_READY = null;
+function loadJsPdf(){
+  if(window.jspdf && window.jspdf.jsPDF) return Promise.resolve(window.jspdf.jsPDF);
+  if(JSPDF_READY) return JSPDF_READY;
+  JSPDF_READY = new Promise((res,rej)=>{
+    const sc = document.createElement("script"); sc.src = "/vendor/jspdf.umd.min.js";
+    sc.onload = ()=>{ (window.jspdf && window.jspdf.jsPDF) ? res(window.jspdf.jsPDF) : rej(new Error("jspdf")); };
+    sc.onerror = ()=>{ JSPDF_READY = null; rej(new Error("jspdf")); };
+    document.head.appendChild(sc);
+  });
+  return JSPDF_READY;
+}
+function pdfTxt(s){ return String(s==null?"":s).replace(/[^\x20-\x7E -ÿ]/g,"?"); }
+function pdfFit(doc, text, maxW){
+  let t = pdfTxt(text);
+  if(doc.getTextWidth(t) <= maxW) return t;
+  while(t.length>1 && doc.getTextWidth(t+"...") > maxW) t = t.slice(0,-1);
+  return t+"...";
+}
+function pdfStamp(){ const d = new Date(); return "Dicetak "+String(d.getDate()).padStart(2,"0")+"/"+String(d.getMonth()+1).padStart(2,"0")+"/"+d.getFullYear()+" "+String(d.getHours()).padStart(2,"0")+":"+String(d.getMinutes()).padStart(2,"0"); }
+function pdfFileName(prefix, name){ return prefix+"-"+String(name).replace(/[^A-Za-z0-9]+/g,"-").replace(/^-|-$/g,"")+".pdf"; }
+
+function buildBracketPdf(JsPDF, catCode){
+  const cat = catByCode(catCode);
+  const matches = bracketMatchesFor(catCode);
+  const rounds = roundNamesFor(cat.quota).map(rn=>({rn, list: matches.filter(m=>m.round===rn).sort((a,b)=>a.matchNo-b.matchNo)})).filter(r=>r.list.length);
+  const n1 = rounds.length ? rounds[0].list.length : 1;
+  const fmt = n1>16 ? "a3" : "a4";
+  const doc = new JsPDF({orientation:"landscape", unit:"mm", format:fmt});
+  const W = doc.internal.pageSize.getWidth(), H = doc.internal.pageSize.getHeight();
+  const M = 10, headH = 28, footH = 7;
+  doc.setFont("helvetica","bold"); doc.setFontSize(fmt==="a3"?17:14);
+  doc.text(pdfTxt("1 DEKADE PB SAKRAL BADMINTON TOURNAMENT 2026"), M, M+6);
+  doc.setFontSize(fmt==="a3"?13:11);
+  doc.text(pdfTxt("Bracket "+cat.name+" ("+cat.level+")"), M, M+13);
+  doc.setFont("helvetica","normal"); doc.setFontSize(8); doc.setTextColor(110);
+  doc.text(pdfTxt("Dewi Sport Hall Karawang - 31 Okt & 1 Nov 2026"), M, M+18);
+  doc.text(pdfStamp(), W-M, M+18, {align:"right"});
+  doc.setTextColor(0);
+  const topY = M+headH, availH = H-topY-M-footH;
+  const gap = 8, colW = (W-2*M-(rounds.length-1)*gap)/Math.max(1,rounds.length);
+  const slotH = availH/n1, boxH = Math.min(slotH*0.86, 12);
+  const fs = Math.max(5, Math.min(8, boxH*0.5/0.3528*0.62));
+  // pusat vertikal tiap match
+  const centers = [];
+  rounds.forEach((r,ri)=>{
+    centers[ri] = r.list.map((m,j)=>{
+      if(ri===0) return topY + (j+0.5)*slotH;
+      const a = centers[ri-1][2*j], b = centers[ri-1][2*j+1];
+      return (a!==undefined && b!==undefined) ? (a+b)/2 : (a!==undefined ? a : b);
+    });
+  });
+  doc.setDrawColor(150); doc.setLineWidth(0.25);
+  rounds.forEach((r,ri)=>{
+    const x = M + ri*(colW+gap);
+    doc.setFont("helvetica","bold"); doc.setFontSize(9); doc.setTextColor(60);
+    doc.text(pdfTxt(ROUND_LABELS[r.rn]), x, topY-3);
+    doc.setTextColor(0);
+    r.list.forEach((m,j)=>{
+      const cy = centers[ri][j], y = cy-boxH/2;
+      // konektor ke babak berikutnya
+      if(ri < rounds.length-1){
+        const ny = centers[ri+1][Math.floor(j/2)];
+        const mx = x+colW+gap/2;
+        doc.line(x+colW, cy, mx, cy); doc.line(mx, cy, mx, ny); doc.line(mx, ny, x+colW+gap, ny);
+      }
+      if(m.bye){ doc.setFillColor(238,238,238); doc.rect(x, y, colW, boxH, "FD"); } else { doc.rect(x, y, colW, boxH); }
+      doc.line(x, cy, x+colW, cy);
+      const win = (side)=> m.winnerParticipantId && side.type==="participant" && side.participantId===m.winnerParticipantId;
+      const done = (m.status==="FINISHED") && !m.bye;
+      [[m.sideA, y+boxH*0.36, m.scoreA],[m.sideB, y+boxH*0.86, m.scoreB]].forEach(([side, ty, sc])=>{
+        const label = matchSideLabel(catCode, side);
+        const isBye = label==="BYE";
+        doc.setFont("helvetica", win(side) ? "bold" : (isBye ? "italic" : "normal")); doc.setFontSize(fs);
+        doc.setTextColor(isBye?140:0);
+        doc.text(pdfFit(doc, label, colW-(done?12:11)), x+1.2, ty);
+        doc.setTextColor(0);
+        if(done && sc!=null){ doc.setFont("helvetica","bold"); doc.text(pdfTxt(sc), x+colW-1.2, ty, {align:"right"}); }
+      });
+      doc.setFont("helvetica","normal"); doc.setFontSize(Math.max(4.5, fs-2)); doc.setTextColor(130);
+      if(!done) doc.text("#"+m.matchNo, x+colW-1.2, y+boxH*0.36, {align:"right"});
+      doc.setTextColor(0);
+    });
+  });
+  doc.setFontSize(7); doc.setTextColor(120);
+  if(matches.some(m=>m.bye)) doc.text(pdfTxt("Pertandingan BYE otomatis maju ke babak berikutnya."), M, H-M+2);
+  return doc;
+}
+
+function buildSchedulePdf(JsPDF, catCodes){
+  const doc = new JsPDF({orientation:"landscape", unit:"mm", format:"a4"});
+  const W = doc.internal.pageSize.getWidth(), H = doc.internal.pageSize.getHeight();
+  const M = 10, rowH = 7.4;
+  const cols = [ {k:"jam",w:20}, {k:"lap",w:16}, {k:"babak",w:36}, {k:"a",w:0}, {k:"b",w:0}, {k:"skor",w:26} ];
+  const fixed = cols.reduce((s,c)=>s+c.w,0), flex = (W-2*M-fixed)/2;
+  cols.forEach(c=>{ if(c.w===0) c.w = flex; });
+  let first = true, any = false;
+  catCodes.forEach(code=>{
+    const cat = catByCode(code);
+    TOURNAMENT_DAYS.forEach(d=>{
+      const entries = SCHEDULE.filter(x=>x.category===code && x.day===d.day);
+      if(!entries.length) return;
+      any = true;
+      if(!first) doc.addPage(); first = false;
+      const header = ()=>{
+        doc.setFont("helvetica","bold"); doc.setFontSize(14); doc.setTextColor(0);
+        doc.text(pdfTxt("1 DEKADE PB SAKRAL BADMINTON TOURNAMENT 2026"), M, M+6);
+        doc.setFontSize(11); doc.text(pdfTxt("Jadwal "+cat.name+" ("+cat.level+") - "+d.label), M, M+13);
+        doc.setFont("helvetica","normal"); doc.setFontSize(8); doc.setTextColor(110);
+        doc.text(pdfTxt("Dewi Sport Hall Karawang - jam adalah rencana (perkiraan, bisa lebih cepat)"), M, M+18);
+        doc.text(pdfStamp(), W-M, M+18, {align:"right"});
+        doc.setTextColor(0);
+        let x = M, y = M+22;
+        doc.setFillColor(40,40,40); doc.setTextColor(255); doc.setFont("helvetica","bold"); doc.setFontSize(8.5);
+        doc.rect(M, y, W-2*M, rowH, "F");
+        [["Jam"],["Lap"],["Babak"],["Pasangan 1"],["Pasangan 2"],["Skor"]].forEach((c,i)=>{ doc.text(c[0], x+1.5, y+rowH*0.68); x += cols[i].w; });
+        doc.setTextColor(0);
+        return y+rowH;
+      };
+      let y = header();
+      // susun baris per slot, termasuk jeda ISOMA
+      const rows = [];
+      const iso = isomaOf(d.day);
+      for(let idx=0; idx<gridSlotsFor(d.day); idx++){
+        if(isBreakSlot(d.day, idx)){ if(idx===iso.start) rows.push({brk:"ISOMA - istirahat "+timeLabel(iso.start,d.day)+" - "+timeLabel(iso.start+iso.len,d.day)}); continue; }
+        entries.filter(x=>x.timeIndex===idx).sort((a,b)=>a.court<b.court?-1:1).forEach(e=>{
+          const m = matchById(code, e.matchId); if(m) rows.push({idx, e, m});
+        });
+      }
+      let zebra = false;
+      rows.forEach(r=>{
+        if(y+rowH > H-M-6){ doc.addPage(); y = header(); zebra = false; }
+        let x = M;
+        if(r.brk){
+          doc.setFillColor(250,235,190); doc.rect(M, y, W-2*M, rowH, "F");
+          doc.setFont("helvetica","bold"); doc.setFontSize(8.5); doc.text(pdfTxt(r.brk), M+(W-2*M)/2, y+rowH*0.68, {align:"center"});
+        } else {
+          if(zebra){ doc.setFillColor(244,244,244); doc.rect(M, y, W-2*M, rowH, "F"); }
+          doc.setFont("helvetica","bold"); doc.setFontSize(8.5);
+          doc.text(timeLabel(r.idx, d.day), x+1.5, y+rowH*0.68); x += cols[0].w;
+          doc.text(pdfTxt(r.e.court), x+1.5, y+rowH*0.68); x += cols[1].w;
+          doc.setFont("helvetica","normal");
+          doc.text(pdfFit(doc, ROUND_LABELS[r.m.round]+" #"+r.m.matchNo, cols[2].w-3), x+1.5, y+rowH*0.68); x += cols[2].w;
+          doc.text(pdfFit(doc, matchSideLabel(code, r.m.sideA), cols[3].w-3), x+1.5, y+rowH*0.68); x += cols[3].w;
+          doc.text(pdfFit(doc, matchSideLabel(code, r.m.sideB), cols[4].w-3), x+1.5, y+rowH*0.68); x += cols[4].w;
+          doc.setDrawColor(190); doc.rect(x+1.5, y+1.4, cols[5].w-3, rowH-2.8);
+        }
+        doc.setDrawColor(215); doc.line(M, y+rowH, W-M, y+rowH);
+        y += rowH; zebra = !zebra;
+      });
+    });
+  });
+  if(!any){ doc.setFontSize(12); doc.text("Belum ada jadwal untuk level ini.", M, M+10); }
+  return doc;
+}
+
+async function downloadPdf(kind, codes){
+  showToast("Menyiapkan PDF...");
+  try{
+    const JsPDF = await loadJsPdf();
+    let doc, name;
+    if(kind==="bracket"){ doc = buildBracketPdf(JsPDF, codes[0]); name = pdfFileName("Bracket", catByCode(codes[0]).name); }
+    else { doc = buildSchedulePdf(JsPDF, codes); name = pdfFileName("Jadwal", codes.length===1 ? catByCode(codes[0]).name : "Semua-Level"); }
+    doc.save(name);
+    showToast("PDF diunduh: "+name);
+  }catch(e){ console.error(e); showToast("Gagal membuat PDF. Cek koneksi lalu coba lagi."); }
+}
+function pdfButtons(kind, label){
+  const row = el("div",{style:"display:flex;gap:8px;flex-wrap:wrap;margin:0 0 12px;"});
+  if(kind==="bracket"){
+    row.appendChild(el("button",{class:"btn btn-outline btn-sm", onclick:()=>downloadPdf("bracket",[bracketActiveCat])}, "⬇ Unduh PDF Bracket "+catByCode(bracketActiveCat).name));
+  } else {
+    META.categories.forEach(c=> row.appendChild(el("button",{class:"btn btn-outline btn-sm", onclick:()=>downloadPdf("schedule",[c.code])}, "⬇ "+c.name)));
+    row.appendChild(el("button",{class:"btn btn-outline btn-sm", onclick:()=>downloadPdf("schedule",META.categories.map(c=>c.code))}, "⬇ Semua level"));
+  }
+  return row;
+}
+
 function viewAdminBracket(){
   if(!bracketActiveCat) bracketActiveCat = META.categories[0].code;
   const wrap = el("div",{});
@@ -3818,6 +3999,7 @@ function viewAdminBracket(){
     catTabs.appendChild(el("button",{class: bracketActiveCat===cat.code?"active":"", onclick:()=>{ bracketActiveCat=cat.code; render(); }}, cat.name));
   });
   sec.appendChild(catTabs);
+  sec.appendChild(pdfButtons("bracket"));
 
   const cat = catByCode(bracketActiveCat);
   const matches = MATCHES[cat.code] || [];
@@ -4352,6 +4534,10 @@ function viewAdminSchedule(){
   sec.appendChild(compactRow);
   sec.appendChild(renderIsomaCard());
   sec.appendChild(renderRentCard());
+  { const dl = el("div",{class:"card", style:"margin-bottom:14px;"});
+    dl.appendChild(el("div",{style:"font-weight:800;font-size:13.5px;margin-bottom:4px;"},"\ud83d\udcc4 Unduh PDF Jadwal"));
+    dl.appendChild(el("div",{style:"color:var(--ink-dim);font-size:11.5px;margin-bottom:10px;"},"Satu file per level (urut jam, ada kolom skor kosong untuk dicatat manual), atau semua level sekaligus."));
+    dl.appendChild(pdfButtons("schedule")); sec.appendChild(dl); }
 
   const legend = el("div",{class:"sched-legend"});
   META.categories.forEach(c=> legend.appendChild(el("span",{},[el("i",{style:"background:"+(SCHEDULE_CAT_COLORS[c.code]||"#888")+";"}), c.name+" ("+c.level+")"])));
