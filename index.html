@@ -4203,7 +4203,18 @@ function confirmMove(category, matchId, target){
   else lines.push("Pindahkan "+schedMatchLabel(category,m)+" ("+matchSideLabel(category,m.sideA)+" vs "+matchSideLabel(category,m.sideB)+") ke "+slotText(target)+".");
   if(v.warnings.length) lines.push("Perhatian: "+v.warnings.join(" "));
   openConfirm({ title: v.swap?"Tukar jadwal?":"Pindahkan jadwal?", body: lines.join(" "), confirmLabel: v.swap?"Tukar":"Pindahkan",
-    onConfirm: async ()=>{ const ok = await applyMove(category, matchId, target); if(ok){ schedMove = null; showToast("Jadwal diperbarui."); } render(); } });
+    onConfirm: async ()=>{
+      const fromDay = (scheduleFor(matchId)||{}).day;
+      const ok = await applyMove(category, matchId, target);
+      if(ok){
+        schedMove = null; showToast("Jadwal diperbarui.");
+        // slot yang ditinggalkan kosong -> tawarkan memajukan match lain (pratinjau dulu, tetap perlu konfirmasi)
+        if(!v.swap && fromDay){
+          const cp = planCompaction(category, fromDay);
+          if(cp && cp.moves && cp.moves.length>0) compactPlan = cp;
+        }
+      }
+      render(); } });
 }
 function renderSchedMovePanel(){
   const {category, matchId} = schedMove;
@@ -4364,7 +4375,7 @@ function viewAdminSchedule(){
         if(m) kids.push(el("div",{class:"sc-sub"}, matchSideLabel(occ.category,m.sideA)+" vs "+matchSideLabel(occ.category,m.sideB)));
         if(ref) kids.push(el("div",{class:"sc-ref"}, "\ud83d\udc64 "+ref));
         cell = el("td",{},[el("div",{class:"sched-cell filled"+mvCls, style:"height:auto;min-height:44px;"+schedCatStyle(occ.category), onclick: mvClick || (()=>{ schedMove={category:occ.category, matchId:occ.matchId}; render(); })}, kids)]);
-      } else if(plan && !(planMatchFor(plan)||{}).bye){
+      } else if(plan && !(planMatchFor(plan)||{}).bye && !(planMatchFor(plan) && scheduleFor(planMatchFor(plan).id))){
         const m = planMatchFor(plan);
         let note = "menunggu drawing";
         if(m){
