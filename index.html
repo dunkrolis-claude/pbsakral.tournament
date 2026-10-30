@@ -3900,7 +3900,7 @@ function validateMove(category, matchId, target){
     const plan = SCHEDULE_PLAN_BY_CELL[mine.day+"-"+mine.timeIndex+"-"+mine.court];
     if(plan && !swap && !(plan.category===cat && plan.round===mm.round && plan.matchNo===mm.matchNo)){
       const pm = planMatchFor(plan);
-      if(!pm || !scheduleFor(pm.id)) warnings.push("Slot ini rencana template untuk "+plan.category.slice(0,3)+" "+plan.round+"#"+plan.matchNo+"; match itu nanti perlu dijadwalkan manual.");
+      if(!pm || (!pm.bye && !matchIsEmptyShell(pm) && !scheduleFor(pm.id))) warnings.push("Slot ini rencana template untuk "+plan.category.slice(0,3)+" "+plan.round+"#"+plan.matchNo+"; match itu nanti perlu dijadwalkan manual.");
     }
   });
   return { ok: errors.length===0, errors:[...new Set(errors)], warnings:[...new Set(warnings)], swap };
@@ -3929,6 +3929,92 @@ async function applyMove(category, matchId, target){
   const ok = await saveSchedule();
   if(!ok){ SCHEDULE = JSON.parse(snapshot); SCHEDULE_LOG = JSON.parse(logSnap); return false; }
   return true;
+}
+/* ===== Padatkan jadwal: majukan match ke slot kosong lebih awal di hari yang sama =====
+   Dipakai setelah BYE membuat banyak slot kosong. Hanya memindahkan match yang belum dipanggil, ke slot kosong
+   yang lebih awal, dan hanya bila validateMove tidak menolak dan tidak memberi peringatan apa pun
+   (urutan babak, jeda istirahat, bentrok peserta, slot rencana kategori lain). */
+let compactPlan = null; // { category, day, moves:[{id,label,from,to}], after:[...] }
+function planCompaction(category, day){
+  const snap = JSON.stringify(SCHEDULE);
+  const before = JSON.parse(snap);
+  const cells = [];
+  for(let i=0;i<SLOTS_PER_DAY;i++) COURTS.forEach(c=>cells.push({day, timeIndex:i, court:c}));
+  for(let pass=0; pass<5; pass++){
+    let changed = false;
+    const mine = SCHEDULE.filter(x=>x.category===category && x.day===day)
+      .sort((a,b)=>(a.timeIndex-b.timeIndex) || String(a.court).localeCompare(String(b.court)));
+    for(const sc of mine){
+      const m = matchById(category, sc.matchId);
+      if(!m || m.bye || MOVE_LOCKED.includes(m.status)) continue;
+      for(const t of cells){
+        if(t.timeIndex >= sc.timeIndex) break;
+        if(scheduleOccupant(t.day, t.timeIndex, t.court)) continue;
+        const v = validateMove(category, m.id, t);
+        if(!v.ok || v.swap || v.warnings.length) continue;
+        sc.timeIndex = t.timeIndex; sc.court = t.court; changed = true; break;
+      }
+    }
+    if(!changed) break;
+  }
+  const after = JSON.parse(JSON.stringify(SCHEDULE));
+  SCHEDULE = JSON.parse(snap);
+  const moves = [];
+  after.forEach(a=>{
+    const b = before.find(x=>x.id===a.id);
+    if(b && (b.timeIndex!==a.timeIndex || b.court!==a.court)){
+      const m = matchById(a.category, a.matchId);
+      moves.push({ id:a.id, label: m ? schedMatchLabel(a.category, m) : a.matchId, from: slotText(b), to: slotText(a), fromIdx:b.timeIndex, toIdx:a.timeIndex });
+    }
+  });
+  moves.sort((x,y)=>x.toIdx-y.toIdx);
+  const lastOf = (list)=> list.filter(x=>x.category===category && x.day===day).reduce((mx,x)=>Math.max(mx,x.timeIndex),-1);
+  return { category, day, moves, after, base: snap, lastBefore: lastOf(before), lastAfter: lastOf(after) };
+}
+async function applyCompaction(){
+  if(!compactPlan || compactPlan.moves.length===0) return false;
+  const plan = compactPlan;
+  const snapshot = JSON.stringify(SCHEDULE), logSnap = JSON.stringify(SCHEDULE_LOG);
+  // pastikan jadwal tidak berubah sejak pratinjau (mis. match baru dipanggil atau dipindah orang lain)
+  const stale = JSON.stringify(SCHEDULE) !== plan.base || plan.moves.some(mv=>{
+    const cur = SCHEDULE.find(x=>x.id===mv.id); const m = cur && matchById(cur.category, cur.matchId);
+    return !m || MOVE_LOCKED.includes(m.status);
+  });
+  if(stale){ showToast("Jadwal berubah sejak pratinjau. Buka lagi dan periksa ulang."); compactPlan = null; render(); return false; }
+  // posisi akhir sudah dihitung dan divalidasi saat pratinjau; pasang langsung
+  plan.moves.forEach(mv=>{
+    const cur = SCHEDULE.find(x=>x.id===mv.id); const a = plan.after.find(x=>x.id===mv.id);
+    cur.timeIndex = a.timeIndex; cur.court = a.court;
+  });
+  schedLogPush("Padatkan jadwal "+catByCode(plan.category).name+" hari "+plan.day+": "+plan.moves.length+" match dimajukan");
+  const ok = await saveSchedule();
+  if(!ok){ SCHEDULE = JSON.parse(snapshot); SCHEDULE_LOG = JSON.parse(logSnap); return false; }
+  return true;
+}
+function renderCompactModal(){
+  const plan = compactPlan;
+  const overlay = el("div",{class:"modal-overlay", onclick:(e)=>{ if(e.target===overlay){ compactPlan=null; render(); } }});
+  const modal = el("div",{class:"modal"});
+  modal.appendChild(el("h3",{},"Padatkan Jadwal "+catByCode(plan.category).name));
+  if(plan.moves.length===0){
+    modal.appendChild(el("p",{},"Tidak ada match yang bisa dimajukan tanpa melanggar urutan babak, jeda istirahat, atau slot kategori lain. Jadwal sudah sepadat yang aman."));
+    modal.appendChild(el("button",{class:"btn btn-gold btn-block", onclick:()=>{ compactPlan=null; render(); }},"Tutup"));
+  } else {
+    modal.appendChild(el("p",{}, plan.moves.length+" match dimajukan ke slot kosong yang lebih awal. Match terakhir hari ini bergeser dari "+timeLabel(plan.lastBefore, plan.day)+" ke "+timeLabel(plan.lastAfter, plan.day)+". Match yang sudah dipanggil atau berjalan tidak disentuh."));
+    const list = el("div",{style:"max-height:240px;overflow:auto;margin:8px 0;font-size:12px;border:1px solid var(--line);border-radius:8px;padding:6px 8px;"});
+    plan.moves.forEach(mv=> list.appendChild(el("div",{style:"padding:3px 0;"}, mv.label+": "+mv.from.replace(/^Hari \d+ /,"")+" → "+mv.to.replace(/^Hari \d+ /,""))));
+    modal.appendChild(list);
+    const actions = el("div",{class:"modal-actions"});
+    actions.appendChild(el("button",{class:"btn btn-outline", onclick:()=>{ compactPlan=null; render(); }},"Batal"));
+    actions.appendChild(el("button",{class:"btn btn-gold", onclick: async ()=>{
+      const ok = await applyCompaction();
+      if(ok){ compactPlan=null; showToast("Jadwal dipadatkan."); }
+      render();
+    }},"Terapkan"));
+    modal.appendChild(actions);
+  }
+  overlay.appendChild(modal);
+  return overlay;
 }
 function allSlotCells(){
   const out = [];
@@ -4005,6 +4091,15 @@ function viewAdminSchedule(){
     render();
   }},"Terapkan Template ke Match yang Sudah Ada");
   sec.appendChild(applyBtn);
+  const compactRow = el("div",{style:"display:flex;gap:8px;flex-wrap:wrap;margin:-4px 0 14px;"});
+  [SCHEDULE_DAY_CATS[scheduleActiveDay].L, SCHEDULE_DAY_CATS[scheduleActiveDay].H].forEach(code=>{
+    const has = SCHEDULE.some(x=>x.category===code && x.day===scheduleActiveDay);
+    compactRow.appendChild(el("button",{class:"btn btn-outline btn-sm", style:"flex:1;"+(has?"":"opacity:.5;"), onclick:()=>{
+      if(!has){ showToast("Belum ada match "+catByCode(code).name+" yang terjadwal di hari ini."); return; }
+      compactPlan = planCompaction(code, scheduleActiveDay); render();
+    }},"Padatkan jadwal "+catByCode(code).name));
+  });
+  sec.appendChild(compactRow);
 
   const legend = el("div",{class:"sched-legend"});
   META.categories.forEach(c=> legend.appendChild(el("span",{},[el("i",{style:"background:"+(SCHEDULE_CAT_COLORS[c.code]||"#888")+";"}), c.name+" ("+c.level+")"])));
@@ -4075,6 +4170,7 @@ function viewAdminSchedule(){
   sec.appendChild(renderSchedLogCard());
   wrap.appendChild(sec);
   if(moveMatchTarget) wrap.appendChild(renderMoveMatchModal());
+  if(compactPlan) wrap.appendChild(renderCompactModal());
   return wrap;
 }
 
