@@ -486,6 +486,7 @@ function regSummaryFromIndexRow(row){
     depositInitial: row.deposit_initial||0, depositBalance: row.deposit_balance||0,
     discountAmount: row.discount_amount||0, discountNote: row.discount_note||"",
     settlements: Array.isArray(row.payment_settlements) ? row.payment_settlements : [],
+    depositTx: Array.isArray(row.deposit_tx) ? row.deposit_tx : [],
     isDemo: !!row.is_demo,
   };
 }
@@ -1211,6 +1212,7 @@ function indexSummary(reg){
     depositInitial: reg.deposit ? reg.deposit.initial : 0,
     depositBalance: reg.deposit ? reg.deposit.balance : 0,
     settlements: (reg.payment && Array.isArray(reg.payment.settlements)) ? reg.payment.settlements : [],
+    depositTx: Array.isArray(reg.depositTransactions) ? reg.depositTransactions : [],
     isDemo: !!reg.isDemo,
   };
 }
@@ -5093,6 +5095,19 @@ let loketRegNo = "";
 let loketFoundId = null;
 let loketReceipt = null; // {name, amount, method, newBalance, status}
 let loketPayMethod = "CASH"; // metode untuk pelunasan di Loket: CASH | TRANSFER
+let loketDepMethod = "CASH"; // metode untuk deposit kok di Loket: CASH | TRANSFER
+function depositMethodPicker(){
+  const mf = el("div",{class:"field", style:"margin-top:8px;"}); mf.appendChild(el("label",{},"Diterima lewat"));
+  const mrow = el("div",{style:"display:flex;gap:8px;"});
+  const mBtns = {};
+  [["CASH","\ud83d\udcb5 Tunai"],["TRANSFER","\ud83c\udfe6 Transfer Rekening"]].forEach(([code,label])=>{
+    const b = el("button",{type:"button", class:"btn btn-sm "+(loketDepMethod===code?"btn-gold":"btn-outline"), style:"flex:1;"}, label);
+    b.addEventListener("click",()=>{ loketDepMethod = code; Object.keys(mBtns).forEach(k=>{ mBtns[k].className = "btn btn-sm "+(loketDepMethod===k?"btn-gold":"btn-outline"); }); });
+    mBtns[code]=b; mrow.appendChild(b);
+  });
+  mf.appendChild(mrow);
+  return mf;
+}
 function viewAdminLoket(){
   const wrap = el("div",{});
   wrap.appendChild(topbar("admin"));
@@ -5197,11 +5212,13 @@ function renderLoketCard(reg){
 
   if(!reg.deposit){
     c.appendChild(el("div",{class:"flag warn", style:"margin-top:8px;"},"Deposit kok belum diterima. Total yang harus dibayar hari ini: "+rupiah(DEPOSIT_FEE)));
+    c.appendChild(depositMethodPicker());
     c.appendChild(el("button",{class:"btn btn-gold btn-block", style:"margin-top:8px;", onclick: async ()=>{
+      const depMethodNow = loketDepMethod === "TRANSFER" ? "TRANSFER" : "CASH";
       reg.deposit = { initial: DEPOSIT_FEE, balance: DEPOSIT_FEE };
-      reg.depositTransactions = [];
+      reg.depositTransactions = [{ id:uid(), matchId:null, type:"INITIAL", amount:DEPOSIT_FEE, method:depMethodNow, note:"Deposit awal di loket ("+(depMethodNow==="TRANSFER"?"transfer":"tunai")+")", createdAt: nowIso() }];
       await persistReg(reg);
-      loketReceipt = { name: reg.player1+" / "+reg.player2, amount: DEPOSIT_FEE, label:"Deposit Kok (Awal)", newBalance: DEPOSIT_FEE, status:"LUNAS" };
+      loketReceipt = { name: reg.player1+" / "+reg.player2, amount: DEPOSIT_FEE, label:"Deposit Kok (Awal, "+(depMethodNow==="TRANSFER"?"Transfer":"Tunai")+")", newBalance: DEPOSIT_FEE, status:"LUNAS" };
       render();
     }},"Terima Deposit Kok (Rp"+DEPOSIT_FEE.toLocaleString("id-ID")+")"));
   } else {
@@ -5216,15 +5233,17 @@ function renderLoketCard(reg){
       const topupInput = el("input",{type:"number", value: topupAmount});
       topupInput.addEventListener("input",(e)=>{ topupAmount = e.target.value; });
       topupField.appendChild(topupInput);
+      c.appendChild(depositMethodPicker());
       c.appendChild(topupField);
       c.appendChild(el("button",{class:"btn btn-gold btn-block", onclick: async ()=>{
         const amt = Number(topupAmount);
         if(!amt || amt<=0){ showToast("Isi nominal yang valid."); return; }
+        const depMethodNow = loketDepMethod === "TRANSFER" ? "TRANSFER" : "CASH";
         reg.deposit.balance += amt;
         reg.depositTransactions = reg.depositTransactions || [];
-        reg.depositTransactions.unshift({ id:uid(), matchId:null, type:"TOPUP", amount:amt, note:"Pembayaran kekurangan deposit di loket", createdAt: nowIso() });
+        reg.depositTransactions.unshift({ id:uid(), matchId:null, type:"TOPUP", amount:amt, method:depMethodNow, note:"Pembayaran kekurangan deposit di loket ("+(depMethodNow==="TRANSFER"?"transfer":"tunai")+")", createdAt: nowIso() });
         await persistReg(reg);
-        loketReceipt = { name: reg.player1+" / "+reg.player2, amount: amt, label:"Pelunasan Kekurangan Deposit", newBalance: reg.deposit.balance, status: reg.deposit.balance>=0?"LUNAS":"MASIH KURANG "+rupiah(Math.abs(reg.deposit.balance)) };
+        loketReceipt = { name: reg.player1+" / "+reg.player2, amount: amt, label:"Pelunasan Kekurangan Deposit ("+(depMethodNow==="TRANSFER"?"Transfer":"Tunai")+")", newBalance: reg.deposit.balance, status: reg.deposit.balance>=0?"LUNAS":"MASIH KURANG "+rupiah(Math.abs(reg.deposit.balance)) };
         render();
       }},"Terima Pembayaran"));
     } else {
@@ -5459,6 +5478,21 @@ function renderBudgetEditModal(){
 
 /* Pemasukan biaya pendaftaran per metode. Pelunasan di Loket dihitung menurut metode yang dipilih admin
    (data lama tanpa metode dianggap tunai); sisanya mengikuti metode pendaftaran awal. */
+// Deposit kok masuk (awal + pelunasan kekurangan) per metode. Deposit lama tanpa catatan metode dianggap tunai (diterima di lokasi).
+function depositSplit(list){
+  let cash = 0, transfer = 0;
+  list.forEach(r=>{
+    const tx = Array.isArray(r.depositTx) ? r.depositTx : [];
+    const init = Number(r.depositInitial)||0;
+    let initLeft = init;
+    tx.forEach(t=>{
+      if(t.type==="INITIAL"){ const a = Number(t.amount)||0; initLeft -= a; if(t.method==="TRANSFER") transfer += a; else cash += a; }
+      else if(t.type==="TOPUP"){ const a = Number(t.amount)||0; if(t.method==="TRANSFER") transfer += a; else cash += a; }
+    });
+    if(initLeft>0) cash += initLeft;
+  });
+  return { cash, transfer };
+}
 function incomeSplit(list){
   let cash = 0, transfer = 0;
   list.forEach(r=>{
@@ -5526,6 +5560,12 @@ function viewAdminFinance(){
   depGrid.appendChild(statCard("Pemakaian Deposit", rupiah(depositUsage), true));
   depGrid.appendChild(statCard("Sisa Deposit", rupiah(depositCollected-depositUsage), true));
   sec.appendChild(depGrid);
+  const depSplit = depositSplit(registeredList);
+  const depSplitGrid = el("div",{class:"stat-grid", style:"margin-top:8px;"});
+  depSplitGrid.appendChild(statCard("\ud83d\udcb5 Deposit Masuk Tunai", rupiah(depSplit.cash), true));
+  depSplitGrid.appendChild(statCard("\ud83c\udfe6 Deposit Masuk Transfer", rupiah(depSplit.transfer), true));
+  sec.appendChild(depSplitGrid);
+  sec.appendChild(el("div",{class:"hint", style:"margin-top:4px;color:var(--ink-faint);font-size:11px;"},"Deposit yang dicatat sebelum ada pilihan metode dihitung sebagai tunai. Angka ini terpisah dari saldo kas di atas."));
 
   sec.appendChild(el("div",{class:"section-title", style:"margin-top:22px;"},"Rekap Pengeluaran"));
   const cashExpense = EXPENSES.filter(e=>e.source!=="BANK").reduce((s,e)=>s+(e.amount||0),0);

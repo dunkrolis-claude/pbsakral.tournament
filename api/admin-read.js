@@ -11,7 +11,7 @@ const INDEX_COLUMNS =
   "deposit_balance, discount_amount, discount_note, is_demo, created_at, updated_at";
 // Tambahan: daftar pelunasan (metode tunai/transfer) untuk laporan keuangan. Bila sintaks ini ditolak,
 // daftar pendaftar tetap harus tampil, jadi ada cadangan tanpa kolom ini.
-const INDEX_COLUMNS_WITH_SETTLEMENTS = INDEX_COLUMNS + ", payment_settlements:payment->settlements";
+const INDEX_COLUMNS_WITH_SETTLEMENTS = INDEX_COLUMNS + ", payment_settlements:payment->settlements, deposit_tx:deposit_transactions";
 
 module.exports = async function handler(req, res) {
   if (req.method !== "GET") {
