@@ -616,7 +616,8 @@ const TOURNAMENT_DAYS = [
   {day:1, label:"Sabtu, 31 Okt 2026"},
   {day:2, label:"Minggu, 1 Nov 2026"},
 ];
-const SLOTS_PER_DAY = 27; // 08:00 to 21:30, 30-minute slots
+const BASE_SLOTS_PER_DAY = 27; // 08:00 to 21:30, 30-minute slots (template RAB)
+const SLOTS_PER_DAY = 32;      // batas atas indeks slot, memberi ruang untuk jeda ISOMA yang disisipkan
 const COURTS = ["A","B","C","D","E"];
 const REST_MIN_GAP = 1; // minimum empty slots between a participant's matches
 let DAY_START_MIN = {1:480, 2:480}; // jam mulai tiap hari (menit sejak 00.00); default 08.00, bisa diatur Super Admin
@@ -683,6 +684,19 @@ function schedCatStyle(catCode){
 }
 const SCHEDULE_PLAN_BY_CELL = {};
 SCHEDULE_PLAN.forEach(p=>{ SCHEDULE_PLAN_BY_CELL[p.day+"-"+p.timeIndex+"-"+p.court] = p; });
+/* ISOMA: jeda istirahat yang disisipkan di hari tertentu. Slot [start, start+len) tidak boleh dipakai match;
+   semua match mulai dari slot start digeser len slot ke belakang. Disimpan di schedule.data.isoma. */
+let ISOMA = {}; // { "1": {start, len}, "2": {...} }
+function isomaOf(day){ const c = ISOMA[day]; return (c && c.len>0) ? c : null; }
+function isBreakSlot(day, idx){ const c = isomaOf(day); return !!c && idx>=c.start && idx<c.start+c.len; }
+function gridSlotsFor(day){ const c = isomaOf(day); return Math.min(SLOTS_PER_DAY, BASE_SLOTS_PER_DAY + (c?c.len:0)); }
+// indeks slot template (tanpa ISOMA) -> indeks sebenarnya, dan sebaliknya
+function planShiftIdx(day, rawIdx){ const c = isomaOf(day); return (c && rawIdx>=c.start) ? rawIdx + c.len : rawIdx; }
+function planAtCell(day, idx, court){
+  const c = isomaOf(day);
+  if(c){ if(idx>=c.start && idx<c.start+c.len) return null; if(idx>=c.start+c.len) idx -= c.len; }
+  return SCHEDULE_PLAN_BY_CELL[day+"-"+idx+"-"+court] || null;
+}
 const ROUND_LABELS = {R64:"Babak 64 Besar", R32:"32 Besar", R16:"16 Besar", QF:"Perempat Final", SF:"Semifinal", F:"Final"};
 function roundNamesFor(quota){ return quota===64 ? ["R64","R32","R16","QF","SF","F"] : ["R32","R16","QF","SF","F"]; }
 
@@ -900,6 +914,7 @@ function applyPhase2(drRows, maRows, schRow){
     MATCHES_VERSION[cat.code] = row ? row.version : 1;
   });
   SCHEDULE = schRow ? (schRow.data.list||[]) : [];
+  ISOMA = (schRow && schRow.data && schRow.data.isoma) || {};
   REF_DEFAULTS = Object.assign({ A:"", B:"", C:"", D:"", E:"", RESERVE:"" }, (schRow && schRow.data.refDefaults) || {});
   SCHEDULE_VERSION = schRow ? schRow.version : 1;
 }
@@ -929,6 +944,7 @@ async function loadPhase2(){
     if(adminSession){ row = await apiRead("schedule"); }
     else { const { data, error } = await sb.from("schedule").select("*").eq("id",1).maybeSingle(); if(error) throw error; row = data; }
     SCHEDULE = row ? (row.data.list||[]) : [];
+    ISOMA = (row && row.data && row.data.isoma) || {};
     REF_DEFAULTS = Object.assign({ A:"", B:"", C:"", D:"", E:"", RESERVE:"" }, (row && row.data.refDefaults) || {});
     SCHEDULE_LOG = (row && row.data && row.data.log) || [];
     SCHEDULE_VERSION = row ? row.version : 1;
@@ -968,7 +984,7 @@ async function saveMatches(onlyCat){
 }
 async function saveSchedule(){
   try{
-    const result = await apiMutate("SAVE_SCHEDULE", { expectedVersion: SCHEDULE_VERSION||1, data: {list: SCHEDULE, refDefaults: REF_DEFAULTS, log: SCHEDULE_LOG} });
+    const result = await apiMutate("SAVE_SCHEDULE", { expectedVersion: SCHEDULE_VERSION||1, data: {list: SCHEDULE, refDefaults: REF_DEFAULTS, log: SCHEDULE_LOG, isoma: ISOMA} });
     SCHEDULE_VERSION = result.data.version;
     return true;
   }catch(e){
@@ -1943,7 +1959,10 @@ function queueInfoFor(m, sched){
   if(m.status==="CALLING") return { state:"CALLING" };
   const ahead = entries.filter(x=> x.s.court===sched.court && x.m.id!==m.id && x.s.timeIndex<sched.timeIndex && !(x.m.status==="FINISHED"||x.m.status==="WO"||x.m.status==="CANCELLED")).length;
   const avg = avgMatchMinutes();
-  return { state:"WAIT", ahead, avg, minutes: ahead*avg };
+  let minutes = ahead*avg;
+  const br = isomaOf(sched.day); // ISOMA yang belum terlewati menambah waktu tunggu
+  if(br && sched.timeIndex>=br.start+br.len && entries.some(x=>x.s.timeIndex<br.start && !(x.m.status==="FINISHED"||x.m.status==="WO"||x.m.status==="CANCELLED"))) minutes += br.len*30;
+  return { state:"WAIT", ahead, avg, minutes };
 }
 function clockAfter(minutes){
   const d = new Date(Date.now() + minutes*60000);
@@ -3864,8 +3883,9 @@ async function applyScheduleTemplate(){
   SCHEDULE_PLAN.forEach(p=>{
     const m = planMatchFor(p);
     if(!m || m.bye || matchIsEmptyShell(m) || scheduleFor(m.id)) return;
-    if(scheduleOccupant(p.day, p.timeIndex, p.court)) return;
-    SCHEDULE.push({ id:uid(), matchId:m.id, category:p.category, day:p.day, timeIndex:p.timeIndex, court:p.court });
+    const ti = planShiftIdx(p.day, p.timeIndex);
+    if(scheduleOccupant(p.day, ti, p.court)) return;
+    SCHEDULE.push({ id:uid(), matchId:m.id, category:p.category, day:p.day, timeIndex:ti, court:p.court });
     if(!m.status) m.status = "SCHEDULED";
     added++;
   });
@@ -3898,6 +3918,8 @@ function validateMove(category, matchId, target){
   const cur = scheduleFor(matchId);
   if(MOVE_LOCKED.includes(m.status)) errors.push("Match ini sudah dipanggil, berjalan, atau selesai — tidak bisa dipindah.");
   if(cur && cur.day===target.day && cur.timeIndex===target.timeIndex && cur.court===target.court) errors.push("Match sudah berada di slot ini.");
+  if(isBreakSlot(target.day, target.timeIndex)) errors.push("Slot ini jam ISOMA (istirahat), tidak bisa dipakai pertandingan.");
+  if(target.timeIndex<0 || target.timeIndex>=SLOTS_PER_DAY) errors.push("Slot di luar jam pertandingan.");
   const occ = scheduleOccupant(target.day, target.timeIndex, target.court);
   let swap = null;
   if(occ && (!cur || occ.id!==cur.id)){
@@ -3941,10 +3963,15 @@ function validateMove(category, matchId, target){
         else if(Math.abs(op.timeIndex-mine.timeIndex) <= REST_MIN_GAP) warnings.push(participantLabel(side.participantId)+" hanya punya jeda singkat antara "+me+" dan "+schedMatchLabel(op.category,om)+".");
       });
     });
+    if(SIMULTANEOUS_ROUNDS.includes(mm.round)){
+      const others = SCHEDULE.filter(x=>x.category===cat && x.matchId!==mm.id && (matchById(cat, x.matchId)||{}).round===mm.round && pos[x.matchId]);
+      if(others.some(x=>pos[x.matchId].day!==mine.day || pos[x.matchId].timeIndex!==mine.timeIndex))
+        warnings.push(ROUND_LABELS[mm.round]+" sebaiknya main berbarengan dalam satu jam yang sama (ada yang dijadwalkan di jam lain).");
+    }
     const cd = categoryDay(cat);
     if(cd && mine.day!==cd) warnings.push(me+" dipindah ke hari yang bukan jadwal kategorinya.");
     // slot rencana (template) milik match lain yang belum punya tempat
-    const plan = SCHEDULE_PLAN_BY_CELL[mine.day+"-"+mine.timeIndex+"-"+mine.court];
+    const plan = planAtCell(mine.day, mine.timeIndex, mine.court);
     if(plan && !swap && !(plan.category===cat && plan.round===mm.round && plan.matchNo===mm.matchNo)){
       const pm = planMatchFor(plan);
       if(!pm || (!pm.bye && !matchIsEmptyShell(pm) && !scheduleFor(pm.id))) warnings.push("Slot ini rencana template untuk "+plan.category.slice(0,3)+" "+plan.round+"#"+plan.matchNo+"; match itu nanti perlu dijadwalkan manual.");
@@ -3981,29 +4008,63 @@ async function applyMove(category, matchId, target){
    Dipakai setelah BYE membuat banyak slot kosong. Hanya memindahkan match yang belum dipanggil, ke slot kosong
    yang lebih awal, dan hanya bila validateMove tidak menolak dan tidak memberi peringatan apa pun
    (urutan babak, jeda istirahat, bentrok peserta, slot rencana kategori lain). */
+const SIMULTANEOUS_ROUNDS = ["QF","SF"]; // main berbarengan: semua match babak ini dalam satu kategori dijadwalkan di jam yang sama
 let compactPlan = null; // { category, day, moves:[{id,label,from,to}], after:[...] }
 function planCompaction(category, day){
   const snap = JSON.stringify(SCHEDULE);
   const before = JSON.parse(snap);
   const cells = [];
   for(let i=0;i<SLOTS_PER_DAY;i++) COURTS.forEach(c=>cells.push({day, timeIndex:i, court:c}));
-  for(let pass=0; pass<5; pass++){
-    let changed = false;
-    const mine = SCHEDULE.filter(x=>x.category===category && x.day===day)
-      .sort((a,b)=>(a.timeIndex-b.timeIndex) || String(a.court).localeCompare(String(b.court)));
-    for(const sc of mine){
-      const m = matchById(category, sc.matchId);
-      if(!m || m.bye || MOVE_LOCKED.includes(m.status)) continue;
-      for(const t of cells){
-        if(t.timeIndex >= sc.timeIndex) break;
-        if(scheduleOccupant(t.day, t.timeIndex, t.court)) continue;
-        const v = validateMove(category, m.id, t);
-        if(!v.ok || v.swap || v.warnings.length) continue;
-        sc.timeIndex = t.timeIndex; sc.court = t.court; changed = true; break;
+  // Perempat final dan semifinal satu kategori harus main berbarengan (satu jam yang sama), jadi dipindah
+  // sebagai satu kelompok, bukan satu per satu.
+  const greedyPass = ()=>{
+    for(let pass=0; pass<5; pass++){
+      let changed = false;
+      const mine = SCHEDULE.filter(x=>x.category===category && x.day===day)
+        .sort((a,b)=>(a.timeIndex-b.timeIndex) || String(a.court).localeCompare(String(b.court)));
+      for(const sc of mine){
+        const m = matchById(category, sc.matchId);
+        if(!m || m.bye || MOVE_LOCKED.includes(m.status) || SIMULTANEOUS_ROUNDS.includes(m.round)) continue;
+        for(const t of cells){
+          if(t.timeIndex >= sc.timeIndex) break;
+          if(scheduleOccupant(t.day, t.timeIndex, t.court)) continue;
+          const v = validateMove(category, m.id, t);
+          if(!v.ok || v.swap || v.warnings.length) continue;
+          sc.timeIndex = t.timeIndex; sc.court = t.court; changed = true; break;
+        }
       }
+      if(!changed) break;
     }
-    if(!changed) break;
-  }
+  };
+  const placeGroup = (round)=>{
+    const entries = SCHEDULE.filter(x=>x.category===category && x.day===day).map(x=>({x, m: matchById(category, x.matchId)}))
+      .filter(e=>e.m && e.m.round===round && !e.m.bye && !MOVE_LOCKED.includes(e.m.status));
+    if(entries.length<2) return;
+    const orig = entries.map(e=>({ id:e.x.id, matchId:e.x.matchId, timeIndex:e.x.timeIndex, court:e.x.court }));
+    const ids = new Set(entries.map(e=>e.x.id));
+    SCHEDULE = SCHEDULE.filter(x=>!ids.has(x.id));
+    for(let t=0;t<SLOTS_PER_DAY;t++){
+      if(isBreakSlot(day,t)) continue;
+      const placed = [];
+      let ok = true;
+      for(const e of entries){
+        let got = null;
+        for(const c of COURTS){
+          if(scheduleOccupant(day, t, c)) continue;
+          const v = validateMove(category, e.m.id, {day, timeIndex:t, court:c});
+          if(!v.ok || v.swap || v.warnings.length) continue;
+          got = c; break;
+        }
+        if(!got){ ok = false; break; }
+        const ent = { id:e.x.id, matchId:e.m.id, category, day, timeIndex:t, court:got };
+        SCHEDULE.push(ent); placed.push(ent.id);
+      }
+      if(ok) return;
+      SCHEDULE = SCHEDULE.filter(x=>!placed.includes(x.id));
+    }
+    orig.forEach(o=> SCHEDULE.push({ id:o.id, matchId:o.matchId, category, day, timeIndex:o.timeIndex, court:o.court })); // tidak muat: kembalikan
+  };
+  greedyPass(); placeGroup("QF"); placeGroup("SF"); greedyPass();
   const after = JSON.parse(JSON.stringify(SCHEDULE));
   SCHEDULE = JSON.parse(snap);
   const moves = [];
@@ -4062,6 +4123,61 @@ function renderCompactModal(){
   }
   overlay.appendChild(modal);
   return overlay;
+}
+/* ===== ISOMA: sisipkan / hapus jeda istirahat di satu hari ===== */
+let isomaDraft = { start: 8, len: 2 }; // default 12.00, 60 menit (indeks slot sebelum ISOMA)
+function dayHasStarted(day, fromIdx){
+  return SCHEDULE.some(x=>{ if(x.day!==day || x.timeIndex<fromIdx) return false; const m = matchById(x.category, x.matchId); return m && (MOVE_LOCKED.includes(m.status) && !m.bye); });
+}
+async function setIsoma(day, start, len){
+  const cur = isomaOf(day);
+  if(cur && dayHasStarted(day, 0)){ showToast("Hari ini sudah berjalan, ISOMA tidak bisa diubah lagi."); return false; }
+  const snapshot = JSON.stringify(SCHEDULE), isoSnap = JSON.stringify(ISOMA), logSnap = JSON.stringify(SCHEDULE_LOG);
+  const mine = SCHEDULE.filter(x=>x.day===day);
+  if(cur){ mine.forEach(x=>{ if(x.timeIndex>=cur.start+cur.len) x.timeIndex -= cur.len; }); delete ISOMA[day]; }
+  if(len>0){
+    if(dayHasStarted(day, start)){ SCHEDULE = JSON.parse(snapshot); ISOMA = JSON.parse(isoSnap); showToast("Ada pertandingan yang sudah berjalan setelah jam itu."); return false; }
+    if(mine.some(x=>x.timeIndex>=start && x.timeIndex+len>=SLOTS_PER_DAY)){ SCHEDULE = JSON.parse(snapshot); ISOMA = JSON.parse(isoSnap); showToast("Jadwal hari itu terlalu panjang untuk disisipi ISOMA."); return false; }
+    mine.forEach(x=>{ if(x.timeIndex>=start) x.timeIndex += len; });
+    ISOMA[day] = { start, len };
+    schedLogPush("ISOMA hari "+day+" dipasang: "+timeLabel(start, day)+"–"+timeLabel(start+len, day)+" (match setelahnya digeser "+(len*30)+" menit)");
+  } else {
+    schedLogPush("ISOMA hari "+day+" dihapus");
+  }
+  const ok = await saveSchedule();
+  if(!ok){ SCHEDULE = JSON.parse(snapshot); ISOMA = JSON.parse(isoSnap); SCHEDULE_LOG = JSON.parse(logSnap); return false; }
+  return true;
+}
+function renderIsomaCard(){
+  const day = scheduleActiveDay;
+  const cur = isomaOf(day);
+  const card = el("div",{class:"card", style:"margin-bottom:14px;"});
+  card.appendChild(el("div",{style:"font-weight:800;font-size:13.5px;margin-bottom:6px;"},"🍱 Jeda ISOMA — "+(TOURNAMENT_DAYS.find(d=>d.day===day)||{}).label));
+  if(cur){
+    card.appendChild(el("div",{style:"font-size:13px;margin-bottom:8px;"},"Terpasang: "+timeLabel(cur.start, day)+" – "+timeLabel(cur.start+cur.len, day)+" ("+(cur.len*30)+" menit). Semua lapangan kosong di jam ini."));
+    card.appendChild(el("button",{class:"btn btn-outline btn-sm", onclick:()=>openConfirm({
+      title:"Hapus jeda ISOMA?", body:"Pertandingan setelah ISOMA dimajukan kembali "+(cur.len*30)+" menit.", confirmLabel:"Hapus ISOMA", danger:true,
+      onConfirm: async ()=>{ const ok = await setIsoma(day, 0, 0); if(ok) showToast("ISOMA dihapus."); render(); }
+    })},"Hapus ISOMA"));
+  } else {
+    card.appendChild(el("div",{style:"font-size:12.5px;color:var(--ink-dim);margin-bottom:8px;"},"Belum ada jeda. Pasang agar semua lapangan istirahat bersamaan; pertandingan mulai jam itu digeser ke belakang."));
+    const row = el("div",{style:"display:flex;gap:8px;flex-wrap:wrap;align-items:center;"});
+    const sSel = el("select",{style:inputStyle()+"width:auto;"});
+    for(let i=2;i<=18;i++) sSel.appendChild(el("option",{value:i, selected:i===isomaDraft.start?"selected":null}, "Mulai "+timeLabel(i, day)));
+    sSel.addEventListener("change",(e)=>{ isomaDraft.start = Number(e.target.value); });
+    const lSel = el("select",{style:inputStyle()+"width:auto;"});
+    [[1,"30 menit"],[2,"60 menit"],[3,"90 menit"]].forEach(([v,l])=> lSel.appendChild(el("option",{value:v, selected:v===isomaDraft.len?"selected":null}, l)));
+    lSel.addEventListener("change",(e)=>{ isomaDraft.len = Number(e.target.value); });
+    row.appendChild(sSel); row.appendChild(lSel);
+    row.appendChild(el("button",{class:"btn btn-gold btn-sm", onclick:()=>openConfirm({
+      title:"Pasang ISOMA?",
+      body:"ISOMA "+timeLabel(isomaDraft.start, day)+" – "+timeLabel(isomaDraft.start+isomaDraft.len, day)+". Semua pertandingan hari ini yang mulai jam "+timeLabel(isomaDraft.start, day)+" atau sesudahnya digeser "+(isomaDraft.len*30)+" menit ke belakang. Nama pemain tidak berubah, tapi jam di kartu pemain ikut berubah, jadi sebaiknya sebelum jadwal dikirim ke pemain.",
+      confirmLabel:"Pasang ISOMA",
+      onConfirm: async ()=>{ const ok = await setIsoma(day, isomaDraft.start, isomaDraft.len); if(ok) showToast("ISOMA dipasang."); render(); }
+    })},"Pasang ISOMA"));
+    card.appendChild(row);
+  }
+  return card;
 }
 function allSlotCells(){
   const out = [];
@@ -4147,6 +4263,7 @@ function viewAdminSchedule(){
     }},"Padatkan jadwal "+catByCode(code).name));
   });
   sec.appendChild(compactRow);
+  sec.appendChild(renderIsomaCard());
 
   const legend = el("div",{class:"sched-legend"});
   META.categories.forEach(c=> legend.appendChild(el("span",{},[el("i",{style:"background:"+(SCHEDULE_CAT_COLORS[c.code]||"#888")+";"}), c.name+" ("+c.level+")"])));
@@ -4168,12 +4285,16 @@ function viewAdminSchedule(){
   thead.appendChild(el("th",{},"Jam"));
   COURTS.forEach(c=> thead.appendChild(el("th",{},"Lap "+c+(REF_DEFAULTS[c]?" \u00b7 "+REF_DEFAULTS[c]:""))));
   table.appendChild(thead);
-  for(let idx=0; idx<SLOTS_PER_DAY; idx++){
+  for(let idx=0; idx<gridSlotsFor(scheduleActiveDay); idx++){
     const tr = el("tr",{});
     tr.appendChild(el("td",{class:"sched-time"}, timeLabel(idx, scheduleActiveDay)));
+    if(isBreakSlot(scheduleActiveDay, idx)){
+      tr.appendChild(el("td",{colspan:String(COURTS.length), style:"text-align:center;background:rgba(212,165,59,.12);color:var(--gold-bright);font-weight:800;letter-spacing:.5px;"}, "\ud83c\udf71 ISOMA \u2014 istirahat"));
+      table.appendChild(tr); continue;
+    }
     COURTS.forEach(court=>{
       const occ = scheduleOccupant(scheduleActiveDay, idx, court);
-      const plan = SCHEDULE_PLAN_BY_CELL[scheduleActiveDay+"-"+idx+"-"+court];
+      const plan = planAtCell(scheduleActiveDay, idx, court);
       let cell;
       const target = {day:scheduleActiveDay, timeIndex:idx, court};
       let mvCls = "", mvClick = null;
@@ -4279,6 +4400,7 @@ async function generateDraftSchedule(){
   outer:
   for(const d of TOURNAMENT_DAYS){
     for(let idx=0; idx<SLOTS_PER_DAY; idx++){
+      if(isBreakSlot(d.day, idx)) continue;
       for(const court of COURTS){
         if(queue.length===0) break outer;
         if(scheduleOccupant(d.day, idx, court)) continue;
@@ -4330,7 +4452,7 @@ function renderMoveMatchModal(){
   const timeField = el("div",{class:"field"});
   timeField.appendChild(el("label",{},"Jam"));
   const timeSel = el("select",{});
-  const fillTimes = ()=>{ timeSel.innerHTML=""; for(let i=0;i<SLOTS_PER_DAY;i++){ timeSel.appendChild(el("option",{value:i, selected:i===selTime?"selected":null}, timeLabel(i, selDay))); } };
+  const fillTimes = ()=>{ timeSel.innerHTML=""; for(let i=0;i<gridSlotsFor(selDay);i++){ if(isBreakSlot(selDay,i)) continue; timeSel.appendChild(el("option",{value:i, selected:i===selTime?"selected":null}, timeLabel(i, selDay))); } };
   fillTimes();
   timeSel.addEventListener("change",(e)=>{ selTime=Number(e.target.value); });
   timeField.appendChild(timeSel);
@@ -5752,6 +5874,7 @@ async function tvRefresh(){
     if(mr.error) throw mr.error;
     META.categories.forEach(cat=>{ const row = (mr.data||[]).find(r=>r.category_code===cat.code); MATCHES[cat.code] = row ? (row.data.list||[]) : []; });
     SCHEDULE = (sr.data && sr.data.data && sr.data.data.list) || [];
+    ISOMA = (sr.data && sr.data.data && sr.data.data.isoma) || {};
     if(Date.now()-tvLastIndex > 60000){ tvLastIndex = Date.now(); await loadIndex(); }
   }catch(e){ console.error(e); /* tampilkan data terakhir; jangan kosongkan layar */ }
 }
