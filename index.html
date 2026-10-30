@@ -4385,6 +4385,8 @@ function viewAdminSchedule(){
   COURTS.forEach(c=> thead.appendChild(el("th",{},"Lap "+c+(REF_DEFAULTS[c]?" \u00b7 "+REF_DEFAULTS[c]:""))));
   table.appendChild(thead);
   for(let idx=0; idx<gridSlotsFor(scheduleActiveDay); idx++){
+    // baris yang seluruh lapangannya tidak disewa (dan kosong) disembunyikan
+    if(!isBreakSlot(scheduleActiveDay, idx) && COURTS.every(c=> isUnrented(scheduleActiveDay, idx, c) && !scheduleOccupant(scheduleActiveDay, idx, c))) continue;
     const tr = el("tr",{});
     tr.appendChild(el("td",{class:"sched-time"}, timeLabel(idx, scheduleActiveDay)));
     if(isBreakSlot(scheduleActiveDay, idx)){
@@ -4407,7 +4409,7 @@ function viewAdminSchedule(){
         }
       }
       if(!occ && isUnrented(scheduleActiveDay, idx, court)){
-        tr.appendChild(el("td",{class:"sched-unrented", title:"Lapangan tidak disewa"},[el("div",{style:"min-height:44px;display:flex;align-items:center;justify-content:center;background:#050505;color:#3a3a3a;font-size:10.5px;font-weight:700;letter-spacing:.4px;"},"TIDAK DISEWA")]));
+        tr.appendChild(el("td",{class:"sched-unrented", title:"Lapangan tidak disewa"},[el("div",{style:"min-height:44px;background:#050505;"})]));
         return;
       }
       if(occ){
