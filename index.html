@@ -1244,7 +1244,7 @@ function buildMessage(type, reg, extra){
   const base = buildMessageBase(type, reg, extra);
   if(type==="MATCH_SCHEDULE_INFO"){
     const cat = catByCode(reg.category);
-    return base + `\n\nBagan ${cat?cat.name:""}: ${deepLink("bagan", reg.category)}\nJadwalku: ${deepLink("jadwalku")}\n\nBuka link ini SEKALI selagi ada sinyal supaya jadwal tersimpan di HP dan tetap bisa dibuka saat sinyal jelek di lokasi.`;
+    return base + `\n\nPantau antrean, bagan & hasil: ${statusLinkFor(reg.regNo)}\n\nBuka link sekali selagi ada sinyal supaya tersimpan di HP.`;
   }
   return base;
 }
@@ -1283,7 +1283,7 @@ function buildMessageBase(type, reg, extra){
       const {m, sched} = upcoming;
       const day = TOURNAMENT_DAYS.find(d=>d.day===sched.day);
       const opponent = opponentLabelFor(reg.category, m, reg.id);
-      return `Halo ${pairName},\n\nBerikut jadwal pertandingan kamu:\n\nKategori: ${cat.name}\nBabak: ${ROUND_LABELS[m.round]} #${m.matchNo}\nLawan: ${opponent}\nHari/Tanggal: ${day?day.label:"-"}\nJam: ${timeLabel(sched.timeIndex, sched.day)}\nLapangan: ${sched.court}\n\nMohon hadir 30 menit sebelum jadwal untuk registrasi ulang di lokasi.\n\nCek jadwal & hasil terbaru: ${statusLink}`;
+      return `Halo ${pairName},\n\nJadwal kamu:\n\ud83c\udff8 ${cat.name} \u00b7 ${ROUND_LABELS[m.round]} #${m.matchNo}\nLawan: ${opponent}\n\ud83d\udcc5 ${day?day.label:"-"} \u00b7 Lapangan ${sched.court}\n\u23f0 Rencana ${timeLabel(sched.timeIndex, sched.day)} (perkiraan, bisa lebih cepat)\n\nMohon sudah di lokasi 1 jam sebelumnya dan siaga di Lapangan ${sched.court}.`;
     }
     case "DATA_REVISION_REQUESTED":
       return `Panitia memerlukan kelengkapan data tambahan untuk pendaftaran ${displayCode(reg.regNo)}: ${extra.note||reg.adminNote||"-"}\nSilakan lengkapi melalui: ${statusLink}`;
