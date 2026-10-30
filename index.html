@@ -687,6 +687,11 @@ SCHEDULE_PLAN.forEach(p=>{ SCHEDULE_PLAN_BY_CELL[p.day+"-"+p.timeIndex+"-"+p.cou
 /* ISOMA: jeda istirahat yang disisipkan di hari tertentu. Slot [start, start+len) tidak boleh dipakai match;
    semua match mulai dari slot start digeser len slot ke belakang. Disimpan di schedule.data.isoma. */
 let ISOMA = {}; // { "1": {start, len}, "2": {...} }
+/* Lapangan tidak disewa: RENT_END[hari][lapangan] = indeks slot pertama yang TIDAK disewa (slot >= itu tidak boleh dipakai).
+   Disimpan di schedule.data.rentEnd. */
+let RENT_END = {};
+function rentEndOf(day, court){ const d = RENT_END[day]; const v = d ? d[court] : undefined; return (typeof v==="number") ? v : Infinity; }
+function isUnrented(day, idx, court){ return idx >= rentEndOf(day, court); }
 function isomaOf(day){ const c = ISOMA[day]; return (c && c.len>0) ? c : null; }
 function isBreakSlot(day, idx){ const c = isomaOf(day); return !!c && idx>=c.start && idx<c.start+c.len; }
 function gridSlotsFor(day){ const c = isomaOf(day); return Math.min(SLOTS_PER_DAY, BASE_SLOTS_PER_DAY + (c?c.len:0)); }
@@ -915,6 +920,7 @@ function applyPhase2(drRows, maRows, schRow){
   });
   SCHEDULE = schRow ? (schRow.data.list||[]) : [];
   ISOMA = (schRow && schRow.data && schRow.data.isoma) || {};
+  RENT_END = (schRow && schRow.data && schRow.data.rentEnd) || {};
   REF_DEFAULTS = Object.assign({ A:"", B:"", C:"", D:"", E:"", RESERVE:"" }, (schRow && schRow.data.refDefaults) || {});
   SCHEDULE_VERSION = schRow ? schRow.version : 1;
 }
@@ -945,6 +951,7 @@ async function loadPhase2(){
     else { const { data, error } = await sb.from("schedule").select("*").eq("id",1).maybeSingle(); if(error) throw error; row = data; }
     SCHEDULE = row ? (row.data.list||[]) : [];
     ISOMA = (row && row.data && row.data.isoma) || {};
+    RENT_END = (row && row.data && row.data.rentEnd) || {};
     REF_DEFAULTS = Object.assign({ A:"", B:"", C:"", D:"", E:"", RESERVE:"" }, (row && row.data.refDefaults) || {});
     SCHEDULE_LOG = (row && row.data && row.data.log) || [];
     SCHEDULE_VERSION = row ? row.version : 1;
@@ -984,7 +991,7 @@ async function saveMatches(onlyCat){
 }
 async function saveSchedule(){
   try{
-    const result = await apiMutate("SAVE_SCHEDULE", { expectedVersion: SCHEDULE_VERSION||1, data: {list: SCHEDULE, refDefaults: REF_DEFAULTS, log: SCHEDULE_LOG, isoma: ISOMA} });
+    const result = await apiMutate("SAVE_SCHEDULE", { expectedVersion: SCHEDULE_VERSION||1, data: {list: SCHEDULE, refDefaults: REF_DEFAULTS, log: SCHEDULE_LOG, isoma: ISOMA, rentEnd: RENT_END} });
     SCHEDULE_VERSION = result.data.version;
     return true;
   }catch(e){
@@ -3920,6 +3927,7 @@ function validateMove(category, matchId, target){
   if(cur && cur.day===target.day && cur.timeIndex===target.timeIndex && cur.court===target.court) errors.push("Match sudah berada di slot ini.");
   if(isBreakSlot(target.day, target.timeIndex)) errors.push("Slot ini jam ISOMA (istirahat), tidak bisa dipakai pertandingan.");
   if(target.timeIndex<0 || target.timeIndex>=SLOTS_PER_DAY) errors.push("Slot di luar jam pertandingan.");
+  if(isUnrented(target.day, target.timeIndex, target.court)) errors.push("Lapangan "+target.court+" tidak disewa mulai jam "+timeLabel(rentEndOf(target.day, target.court), target.day)+".");
   const occ = scheduleOccupant(target.day, target.timeIndex, target.court);
   let swap = null;
   if(occ && (!cur || occ.id!==cur.id)){
@@ -4148,6 +4156,36 @@ async function setIsoma(day, start, len){
   if(!ok){ SCHEDULE = JSON.parse(snapshot); ISOMA = JSON.parse(isoSnap); SCHEDULE_LOG = JSON.parse(logSnap); return false; }
   return true;
 }
+async function setRentEnd(day, court, idx){
+  const mine = SCHEDULE.filter(x=>x.day===day && x.court===court && x.timeIndex>=idx);
+  if(idx!==Infinity && mine.length){ showToast("Masih ada "+mine.length+" pertandingan di Lap "+court+" mulai jam itu. Pindahkan dulu."); return false; }
+  const snap = JSON.stringify(RENT_END), logSnap = JSON.stringify(SCHEDULE_LOG);
+  RENT_END[day] = RENT_END[day] || {};
+  if(idx===Infinity){ delete RENT_END[day][court]; schedLogPush("Lap "+court+" hari "+day+": disewa sepanjang hari"); }
+  else { RENT_END[day][court] = idx; schedLogPush("Lap "+court+" hari "+day+": tidak disewa mulai "+timeLabel(idx, day)); }
+  const ok = await saveSchedule();
+  if(!ok){ RENT_END = JSON.parse(snap); SCHEDULE_LOG = JSON.parse(logSnap); return false; }
+  return true;
+}
+function renderRentCard(){
+  const day = scheduleActiveDay;
+  const card = el("div",{class:"card", style:"margin-bottom:14px;"});
+  card.appendChild(el("div",{style:"font-weight:800;font-size:13.5px;margin-bottom:4px;"},"\ud83c\udfdf\ufe0f Sewa Lapangan \u2014 "+(TOURNAMENT_DAYS.find(d=>d.day===day)||{}).label));
+  card.appendChild(el("div",{style:"color:var(--ink-dim);font-size:11.5px;margin-bottom:10px;"},"Pilih jam mulai lapangan TIDAK disewa. Slot setelahnya tampil hitam di grid dan tidak bisa diisi pertandingan."));
+  const grid = el("div",{style:"display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;"});
+  COURTS.forEach(court=>{
+    const f = el("div",{});
+    f.appendChild(el("div",{style:"font-size:10.5px;color:var(--ink-faint);font-weight:700;margin-bottom:3px;"},"Lapangan "+court));
+    const cur = rentEndOf(day, court);
+    const sel = el("select",{style:"width:100%;background:var(--bg-elev);border:1px solid var(--line);border-radius:8px;padding:8px;color:var(--ink);font-size:12.5px;"});
+    sel.appendChild(el("option",{value:"all", selected: cur===Infinity?"selected":null},"Sepanjang hari"));
+    for(let i=1;i<gridSlotsFor(day);i++){ if(isBreakSlot(day,i)) continue; sel.appendChild(el("option",{value:i, selected: cur===i?"selected":null},"Tidak disewa \u2265 "+timeLabel(i,day))); }
+    sel.addEventListener("change", async (e)=>{ const v = e.target.value; await setRentEnd(day, court, v==="all"?Infinity:Number(v)); render(); });
+    f.appendChild(sel); grid.appendChild(f);
+  });
+  card.appendChild(grid);
+  return card;
+}
 function renderIsomaCard(){
   const day = scheduleActiveDay;
   const cur = isomaOf(day);
@@ -4313,6 +4351,7 @@ function viewAdminSchedule(){
   });
   sec.appendChild(compactRow);
   sec.appendChild(renderIsomaCard());
+  sec.appendChild(renderRentCard());
 
   const legend = el("div",{class:"sched-legend"});
   META.categories.forEach(c=> legend.appendChild(el("span",{},[el("i",{style:"background:"+(SCHEDULE_CAT_COLORS[c.code]||"#888")+";"}), c.name+" ("+c.level+")"])));
@@ -4346,6 +4385,8 @@ function viewAdminSchedule(){
   COURTS.forEach(c=> thead.appendChild(el("th",{},"Lap "+c+(REF_DEFAULTS[c]?" \u00b7 "+REF_DEFAULTS[c]:""))));
   table.appendChild(thead);
   for(let idx=0; idx<gridSlotsFor(scheduleActiveDay); idx++){
+    // baris yang seluruh lapangannya tidak disewa (dan kosong) disembunyikan
+    if(!isBreakSlot(scheduleActiveDay, idx) && COURTS.every(c=> isUnrented(scheduleActiveDay, idx, c) && !scheduleOccupant(scheduleActiveDay, idx, c))) continue;
     const tr = el("tr",{});
     tr.appendChild(el("td",{class:"sched-time"}, timeLabel(idx, scheduleActiveDay)));
     if(isBreakSlot(scheduleActiveDay, idx)){
@@ -4366,6 +4407,10 @@ function viewAdminSchedule(){
           mvCls = v.ok ? (v.swap?" mv-swap":" mv-ok") : " mv-bad";
           mvClick = ()=> confirmMove(schedMove.category, schedMove.matchId, target);
         }
+      }
+      if(!occ && isUnrented(scheduleActiveDay, idx, court)){
+        tr.appendChild(el("td",{class:"sched-unrented", title:"Lapangan tidak disewa"},[el("div",{style:"min-height:44px;background:#050505;"})]));
+        return;
       }
       if(occ){
         const m = matchById(occ.category, occ.matchId);
@@ -5935,6 +5980,7 @@ async function tvRefresh(){
     META.categories.forEach(cat=>{ const row = (mr.data||[]).find(r=>r.category_code===cat.code); MATCHES[cat.code] = row ? (row.data.list||[]) : []; });
     SCHEDULE = (sr.data && sr.data.data && sr.data.data.list) || [];
     ISOMA = (sr.data && sr.data.data && sr.data.data.isoma) || {};
+    RENT_END = (sr.data && sr.data.data && sr.data.data.rentEnd) || {};
     if(Date.now()-tvLastIndex > 60000){ tvLastIndex = Date.now(); await loadIndex(); }
   }catch(e){ console.error(e); /* tampilkan data terakhir; jangan kosongkan layar */ }
 }
