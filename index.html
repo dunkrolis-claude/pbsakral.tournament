@@ -1916,6 +1916,51 @@ function participantMatches(regId, category){
     (m.sideB.type==="participant" && m.sideB.participantId===regId)
   );
 }
+/* ===== Antrean & perkiraan giliran =====
+   Jam di jadwal hanya rencana (slot 30 menit). Untuk pemain yang lebih berguna adalah: berapa pertandingan
+   lagi di lapangannya sebelum gilirannya. Dihitung dari match yang belum selesai di lapangan yang sama pada
+   hari yang sama, dan baru ditampilkan setelah hari itu benar-benar berjalan. */
+function avgMatchMinutes(){
+  const done = [];
+  META.categories.forEach(c=> (MATCHES[c.code]||[]).forEach(m=>{
+    if(m.status==="FINISHED" && !m.bye && m.actualStartAt && m.actualFinishAt){
+      const d = (Date.parse(m.actualFinishAt) - Date.parse(m.actualStartAt))/60000;
+      if(d>=5 && d<=90) done.push({ t: Date.parse(m.actualFinishAt), d });
+    }
+  }));
+  if(done.length<3) return 30;
+  done.sort((a,b)=>b.t-a.t);
+  const last = done.slice(0,10);
+  const avg = last.reduce((x,y)=>x+y.d,0)/last.length;
+  return Math.max(10, Math.min(45, Math.round(avg)));
+}
+function queueInfoFor(m, sched){
+  if(!m || !sched) return null;
+  const entries = SCHEDULE.filter(x=>x.day===sched.day).map(x=>({s:x, m: matchById(x.category, x.matchId)})).filter(x=>x.m);
+  const dayLive = entries.some(x=> x.m.status==="CALLING" || x.m.status==="ON_COURT" || ((x.m.status==="FINISHED"||x.m.status==="WO") && !x.m.bye));
+  if(!dayLive) return null;
+  if(m.status==="ON_COURT") return { state:"ON_COURT" };
+  if(m.status==="CALLING") return { state:"CALLING" };
+  const ahead = entries.filter(x=> x.s.court===sched.court && x.m.id!==m.id && x.s.timeIndex<sched.timeIndex && !(x.m.status==="FINISHED"||x.m.status==="WO"||x.m.status==="CANCELLED")).length;
+  const avg = avgMatchMinutes();
+  return { state:"WAIT", ahead, avg, minutes: ahead*avg };
+}
+function clockAfter(minutes){
+  const d = new Date(Date.now() + minutes*60000);
+  return String(d.getHours()).padStart(2,"0")+":"+String(d.getMinutes()).padStart(2,"0");
+}
+function queueRows(m, sched){
+  const q = queueInfoFor(m, sched);
+  if(!q) return [];
+  const row = (k,v,st)=> el("div",{class:"kv"},[el("span",{class:"k"},k),el("span",{class:"v", style:st||""},v)]);
+  if(q.state==="ON_COURT") return [ row("Antrean","Sedang bermain","color:var(--ok);font-weight:800;") ];
+  if(q.state==="CALLING") return [ row("Antrean","Dipanggil — segera ke Lapangan "+sched.court,"color:var(--gold-bright);font-weight:800;") ];
+  if(q.ahead===0) return [ row("Antrean","Berikutnya di Lapangan "+sched.court+" — siap-siap!","color:var(--gold-bright);font-weight:800;") ];
+  return [
+    row("Antrean", q.ahead+" pertandingan lagi di Lapangan "+sched.court, "font-weight:800;"),
+    row("Perkiraan giliran", "± "+clockAfter(q.minutes)+" (rata-rata "+q.avg+" menit/match)")
+  ];
+}
 function opponentLabelFor(category, match, regId){
   const otherSide = (match.sideA.type==="participant" && match.sideA.participantId===regId) ? match.sideB : match.sideA;
   return matchSideLabel(category, otherSide);
@@ -1950,8 +1995,10 @@ function renderParticipantMatchCards(reg){
     upCard.appendChild(el("div",{class:"kv"},[el("span",{class:"k"},"Lawan"),el("span",{class:"v"},opponentLabelFor(reg.category, m, reg.id))]));
     if(sched){
       const day = TOURNAMENT_DAYS.find(d=>d.day===sched.day);
-      upCard.appendChild(el("div",{class:"kv"},[el("span",{class:"k"},"Hari/Jam"),el("span",{class:"v"},(day?day.label:"")+" \u00b7 "+timeLabel(sched.timeIndex, sched.day))]));
+      upCard.appendChild(el("div",{class:"kv"},[el("span",{class:"k"},"Hari/Jam rencana"),el("span",{class:"v"},(day?day.label:"")+" \u00b7 "+timeLabel(sched.timeIndex, sched.day))]));
       upCard.appendChild(el("div",{class:"kv"},[el("span",{class:"k"},"Court"),el("span",{class:"v"},"Lapangan "+sched.court)]));
+      queueRows(m, sched).forEach(r=>upCard.appendChild(r));
+      upCard.appendChild(el("div",{style:"font-size:11px;color:var(--ink-faint);margin-top:4px;"},"Jam hanya rencana; pertandingan bisa lebih cepat atau lebih lambat. Pantau antrean di sini."));
     } else {
       upCard.appendChild(el("div",{class:"kv"},[el("span",{class:"k"},"Jadwal"),el("span",{class:"v"},"Menunggu diatur panitia")]));
     }
@@ -4147,7 +4194,7 @@ function viewAdminSchedule(){
         if(m) kids.push(el("div",{class:"sc-sub"}, matchSideLabel(occ.category,m.sideA)+" vs "+matchSideLabel(occ.category,m.sideB)));
         if(ref) kids.push(el("div",{class:"sc-ref"}, "\ud83d\udc64 "+ref));
         cell = el("td",{},[el("div",{class:"sched-cell filled"+mvCls, style:"height:auto;min-height:44px;"+schedCatStyle(occ.category), onclick: mvClick || (()=>{ schedMove={category:occ.category, matchId:occ.matchId}; render(); })}, kids)]);
-      } else if(plan){
+      } else if(plan && !(planMatchFor(plan)||{}).bye){
         const m = planMatchFor(plan);
         let note = "menunggu drawing";
         if(m){
@@ -5721,7 +5768,7 @@ function tvCourtRow(court){
   const m = pick.m;
   const meta = el("div",{class:"tv-meta"},[
     el("b",{style:"color:"+color+";"}, catByCode(m.category).name),
-    el("span",{}, "  "+(TV_ROUND_SHORT[m.round]||m.round)+"  "+timeLabel(pick.s.timeIndex, pick.s.day))
+    el("span",{}, "  "+(TV_ROUND_SHORT[m.round]||m.round)+"  "+timeLabel(pick.s.timeIndex, pick.s.day)+(q.length>1 ? "  \u00b7 +"+(q.length-1)+" antre" : ""))
   ]);
   const ls = live && m.liveScoring ? m.liveScoring : null;
   if(ls) meta.appendChild(el("span",{class:"tv-set"}, refSetLabel(ls)));
