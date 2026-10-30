@@ -3963,6 +3963,11 @@ function validateMove(category, matchId, target){
         else if(Math.abs(op.timeIndex-mine.timeIndex) <= REST_MIN_GAP) warnings.push(participantLabel(side.participantId)+" hanya punya jeda singkat antara "+me+" dan "+schedMatchLabel(op.category,om)+".");
       });
     });
+    if(SIMULTANEOUS_ROUNDS.includes(mm.round)){
+      const others = SCHEDULE.filter(x=>x.category===cat && x.matchId!==mm.id && (matchById(cat, x.matchId)||{}).round===mm.round && pos[x.matchId]);
+      if(others.some(x=>pos[x.matchId].day!==mine.day || pos[x.matchId].timeIndex!==mine.timeIndex))
+        warnings.push(ROUND_LABELS[mm.round]+" sebaiknya main berbarengan dalam satu jam yang sama (ada yang dijadwalkan di jam lain).");
+    }
     const cd = categoryDay(cat);
     if(cd && mine.day!==cd) warnings.push(me+" dipindah ke hari yang bukan jadwal kategorinya.");
     // slot rencana (template) milik match lain yang belum punya tempat
@@ -4003,29 +4008,63 @@ async function applyMove(category, matchId, target){
    Dipakai setelah BYE membuat banyak slot kosong. Hanya memindahkan match yang belum dipanggil, ke slot kosong
    yang lebih awal, dan hanya bila validateMove tidak menolak dan tidak memberi peringatan apa pun
    (urutan babak, jeda istirahat, bentrok peserta, slot rencana kategori lain). */
+const SIMULTANEOUS_ROUNDS = ["QF","SF"]; // main berbarengan: semua match babak ini dalam satu kategori dijadwalkan di jam yang sama
 let compactPlan = null; // { category, day, moves:[{id,label,from,to}], after:[...] }
 function planCompaction(category, day){
   const snap = JSON.stringify(SCHEDULE);
   const before = JSON.parse(snap);
   const cells = [];
   for(let i=0;i<SLOTS_PER_DAY;i++) COURTS.forEach(c=>cells.push({day, timeIndex:i, court:c}));
-  for(let pass=0; pass<5; pass++){
-    let changed = false;
-    const mine = SCHEDULE.filter(x=>x.category===category && x.day===day)
-      .sort((a,b)=>(a.timeIndex-b.timeIndex) || String(a.court).localeCompare(String(b.court)));
-    for(const sc of mine){
-      const m = matchById(category, sc.matchId);
-      if(!m || m.bye || MOVE_LOCKED.includes(m.status)) continue;
-      for(const t of cells){
-        if(t.timeIndex >= sc.timeIndex) break;
-        if(scheduleOccupant(t.day, t.timeIndex, t.court)) continue;
-        const v = validateMove(category, m.id, t);
-        if(!v.ok || v.swap || v.warnings.length) continue;
-        sc.timeIndex = t.timeIndex; sc.court = t.court; changed = true; break;
+  // Perempat final dan semifinal satu kategori harus main berbarengan (satu jam yang sama), jadi dipindah
+  // sebagai satu kelompok, bukan satu per satu.
+  const greedyPass = ()=>{
+    for(let pass=0; pass<5; pass++){
+      let changed = false;
+      const mine = SCHEDULE.filter(x=>x.category===category && x.day===day)
+        .sort((a,b)=>(a.timeIndex-b.timeIndex) || String(a.court).localeCompare(String(b.court)));
+      for(const sc of mine){
+        const m = matchById(category, sc.matchId);
+        if(!m || m.bye || MOVE_LOCKED.includes(m.status) || SIMULTANEOUS_ROUNDS.includes(m.round)) continue;
+        for(const t of cells){
+          if(t.timeIndex >= sc.timeIndex) break;
+          if(scheduleOccupant(t.day, t.timeIndex, t.court)) continue;
+          const v = validateMove(category, m.id, t);
+          if(!v.ok || v.swap || v.warnings.length) continue;
+          sc.timeIndex = t.timeIndex; sc.court = t.court; changed = true; break;
+        }
       }
+      if(!changed) break;
     }
-    if(!changed) break;
-  }
+  };
+  const placeGroup = (round)=>{
+    const entries = SCHEDULE.filter(x=>x.category===category && x.day===day).map(x=>({x, m: matchById(category, x.matchId)}))
+      .filter(e=>e.m && e.m.round===round && !e.m.bye && !MOVE_LOCKED.includes(e.m.status));
+    if(entries.length<2) return;
+    const orig = entries.map(e=>({ id:e.x.id, matchId:e.x.matchId, timeIndex:e.x.timeIndex, court:e.x.court }));
+    const ids = new Set(entries.map(e=>e.x.id));
+    SCHEDULE = SCHEDULE.filter(x=>!ids.has(x.id));
+    for(let t=0;t<SLOTS_PER_DAY;t++){
+      if(isBreakSlot(day,t)) continue;
+      const placed = [];
+      let ok = true;
+      for(const e of entries){
+        let got = null;
+        for(const c of COURTS){
+          if(scheduleOccupant(day, t, c)) continue;
+          const v = validateMove(category, e.m.id, {day, timeIndex:t, court:c});
+          if(!v.ok || v.swap || v.warnings.length) continue;
+          got = c; break;
+        }
+        if(!got){ ok = false; break; }
+        const ent = { id:e.x.id, matchId:e.m.id, category, day, timeIndex:t, court:got };
+        SCHEDULE.push(ent); placed.push(ent.id);
+      }
+      if(ok) return;
+      SCHEDULE = SCHEDULE.filter(x=>!placed.includes(x.id));
+    }
+    orig.forEach(o=> SCHEDULE.push({ id:o.id, matchId:o.matchId, category, day, timeIndex:o.timeIndex, court:o.court })); // tidak muat: kembalikan
+  };
+  greedyPass(); placeGroup("QF"); placeGroup("SF"); greedyPass();
   const after = JSON.parse(JSON.stringify(SCHEDULE));
   SCHEDULE = JSON.parse(snap);
   const moves = [];
