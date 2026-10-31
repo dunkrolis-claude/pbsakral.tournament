@@ -3578,14 +3578,28 @@ function viewAdminRekap(){
   sec.appendChild(catTabs);
 
   const bar = el("div",{style:"display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin:8px 0 10px;"});
-  const sb2 = el("input",{placeholder:"Cari kode / nama / PB", value: rekapQuery, style:inputStyle()+"flex:1;min-width:160px;"});
-  sb2.addEventListener("change",(e)=>{ rekapQuery = e.target.value; render(); });
-  sb2.addEventListener("keydown",(e)=>{ if(e.key==="Enter"){ rekapQuery = e.target.value; render(); } });
-  bar.appendChild(sb2);
+  const sbWrap = el("div",{style:"position:relative;flex:1;min-width:160px;"});
+  const sb2 = el("input",{placeholder:"Cari kode / nama / PB", value: rekapQuery, style:inputStyle()+"width:100%;padding-right:34px;", autocomplete:"off", enterkeyhint:"search"});
+  const clearBtn = el("button",{type:"button", title:"Hapus pencarian", style:"position:absolute;right:4px;top:50%;transform:translateY(-50%);width:28px;height:28px;border:0;border-radius:14px;background:var(--bg-elev);color:var(--ink-dim);font-size:15px;line-height:1;cursor:pointer;"+(rekapQuery?"":"display:none;")},"\u2715");
+  let rekapTimer = null;
+  const applyQuery = (v)=>{ rekapQuery = v; clearBtn.style.display = v ? "" : "none"; fillRekapBody(body); };
+  sb2.addEventListener("input",(e)=>{ const v = e.target.value; clearBtn.style.display = v ? "" : "none"; clearTimeout(rekapTimer); rekapTimer = setTimeout(()=>applyQuery(v), 120); });
+  sb2.addEventListener("keydown",(e)=>{ if(e.key==="Enter"){ clearTimeout(rekapTimer); applyQuery(e.target.value); } });
+  clearBtn.addEventListener("click",()=>{ clearTimeout(rekapTimer); sb2.value = ""; applyQuery(""); sb2.focus(); });
+  sbWrap.appendChild(sb2); sbWrap.appendChild(clearBtn);
+  bar.appendChild(sbWrap);
   bar.appendChild(el("button",{class: "btn btn-sm "+(rekapOnlyUnpaid?"btn-gold":"btn-outline"), onclick:()=>{ rekapOnlyUnpaid = !rekapOnlyUnpaid; render(); }}, rekapOnlyUnpaid ? "Hanya belum lunas ✓" : "Hanya belum lunas"));
   bar.appendChild(el("button",{class:"btn btn-outline btn-sm", onclick:downloadRekap},"Unduh CSV"));
   sec.appendChild(bar);
-
+  const body = el("div",{});
+  sec.appendChild(body);
+  fillRekapBody(body);
+  wrap.appendChild(sec);
+  return wrap;
+}
+// Isi daftar rekap saja (statistik + tabel). Dipisah agar pencarian tidak membangun ulang seluruh halaman.
+function fillRekapBody(sec){
+  while(sec.firstChild) sec.removeChild(sec.firstChild);
   const all = rekapRows(rekapCat, false, rekapQuery);
   const rows = rekapOnlyUnpaid ? all.filter(x=>!x.p.lunas) : all;
   const nLunas = all.filter(x=>x.p.lunas).length;
@@ -3626,8 +3640,6 @@ function viewAdminRekap(){
     box.appendChild(tbl);
     sec.appendChild(box);
   }
-  wrap.appendChild(sec);
-  return wrap;
 }
 
 /* ============ ADMIN: DRAWING (Phase 2) ============ */
