@@ -338,22 +338,26 @@ module.exports = async function handler(req, res) {
       if (!id) return sendJson(res, 400, { ok: false, error: "id_required" });
 
       const fields = pickAllowed(payload, UPDATE_ALLOWED_FIELDS);
-      if (fields.status === "REGISTERED") {
-        return sendJson(res, 400, { ok: false, error: "use_mark_paid_or_verify_payment" });
-      }
-      if (fields.payment_status === "PAID") {
-        return sendJson(res, 400, { ok: false, error: "use_mark_paid_or_verify_payment" });
-      }
-      if (fields.payment && fields.payment.status === "PAID") {
-        return sendJson(res, 400, { ok: false, error: "use_mark_paid_or_verify_payment" });
-      }
 
       const { data: existing, error: fetchErr } = await supabase
-        .from("registrations").select("category, payment").eq("id", id).maybeSingle();
+        .from("registrations").select("category, payment, status, payment_status").eq("id", id).maybeSingle();
       if (fetchErr) throw fetchErr;
       if (!existing) return sendJson(res, 404, { ok: false, error: "not_found" });
       if (!scopeAllowsCategory(session, existing.category)) {
         return sendJson(res, 403, { ok: false, error: "forbidden_scope" });
+      }
+
+      // REGISTERED / PAID hanya boleh DICAPAI lewat MARK_PAID / VERIFY_PAYMENT (alokasi nomor atomik).
+      // Pendaftar yang SUDAH REGISTERED/PAID boleh mengirim ulang nilai yang sama (mis. saat menerima deposit di Loket);
+      // yang ditolak hanya perubahan DARI status lain MENJADI REGISTERED/PAID.
+      if (fields.status === "REGISTERED" && existing.status !== "REGISTERED") {
+        return sendJson(res, 400, { ok: false, error: "use_mark_paid_or_verify_payment" });
+      }
+      if (fields.payment_status === "PAID" && existing.payment_status !== "PAID") {
+        return sendJson(res, 400, { ok: false, error: "use_mark_paid_or_verify_payment" });
+      }
+      if (fields.payment && fields.payment.status === "PAID" && !(existing.payment && existing.payment.status === "PAID")) {
+        return sendJson(res, 400, { ok: false, error: "use_mark_paid_or_verify_payment" });
       }
 
       // merge payment jsonb instead of overwriting wholesale, if provided
