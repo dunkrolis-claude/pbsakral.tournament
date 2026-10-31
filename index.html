@@ -5262,7 +5262,8 @@ function renderLoketCard(reg){
       reg.payment.amountPaid = (Number(reg.payment.amountPaid)||0) + amt;
       const payMethodNow = loketPayMethod === "TRANSFER" ? "TRANSFER" : "CASH";
       reg.payment.settlements = (reg.payment.settlements||[]).concat([{ amount: amt, at: nowIso(), method: payMethodNow, note: "Pelunasan di Loket ("+(payMethodNow==="TRANSFER"?"transfer":"tunai")+")" }]);
-      await persistReg(reg);
+      const savedOk = await persistReg(reg);
+      if(!savedOk){ REG_CACHE[reg.id] = undefined; await loadRegFull(reg.id); showToast("GAGAL MENYIMPAN \u2014 uang BELUM tercatat di sistem. Jangan beri struk, coba lagi atau hubungi admin."); render(); return; }
       loketReceipt = { name: reg.player1+" / "+reg.player2, amount: amt, label:"Pelunasan Biaya Pendaftaran ("+(payMethodNow==="TRANSFER"?"Transfer":"Tunai")+")", newBalance: reg.deposit ? reg.deposit.balance : 0, status: regOwed(reg)===0 ? "LUNAS" : "MASIH KURANG "+rupiah(regOwed(reg)) };
       render();
     }},"Terima Pelunasan"));
@@ -5280,7 +5281,8 @@ function renderLoketCard(reg){
       const depMethodNow = loketDepMethod === "TRANSFER" ? "TRANSFER" : "CASH";
       reg.deposit = { initial: DEPOSIT_FEE, balance: DEPOSIT_FEE };
       reg.depositTransactions = [{ id:uid(), matchId:null, type:"INITIAL", amount:DEPOSIT_FEE, method:depMethodNow, note:"Deposit awal di loket ("+(depMethodNow==="TRANSFER"?"transfer":"tunai")+")", createdAt: nowIso() }];
-      await persistReg(reg);
+      const savedOk = await persistReg(reg);
+      if(!savedOk){ REG_CACHE[reg.id] = undefined; await loadRegFull(reg.id); showToast("GAGAL MENYIMPAN \u2014 uang BELUM tercatat di sistem. Jangan beri struk, coba lagi atau hubungi admin."); render(); return; }
       loketReceipt = { name: reg.player1+" / "+reg.player2, amount: DEPOSIT_FEE, label:"Deposit Kok (Awal, "+(depMethodNow==="TRANSFER"?"Transfer":"Tunai")+")", newBalance: DEPOSIT_FEE, status:"LUNAS" };
       render();
     }},"Terima Deposit Kok (Rp"+DEPOSIT_FEE.toLocaleString("id-ID")+")"));
@@ -5305,7 +5307,8 @@ function renderLoketCard(reg){
         reg.deposit.balance += amt;
         reg.depositTransactions = reg.depositTransactions || [];
         reg.depositTransactions.unshift({ id:uid(), matchId:null, type:"TOPUP", amount:amt, method:depMethodNow, note:"Pembayaran kekurangan deposit di loket ("+(depMethodNow==="TRANSFER"?"transfer":"tunai")+")", createdAt: nowIso() });
-        await persistReg(reg);
+        const savedOk = await persistReg(reg);
+      if(!savedOk){ REG_CACHE[reg.id] = undefined; await loadRegFull(reg.id); showToast("GAGAL MENYIMPAN \u2014 uang BELUM tercatat di sistem. Jangan beri struk, coba lagi atau hubungi admin."); render(); return; }
         loketReceipt = { name: reg.player1+" / "+reg.player2, amount: amt, label:"Pelunasan Kekurangan Deposit ("+(depMethodNow==="TRANSFER"?"Transfer":"Tunai")+")", newBalance: reg.deposit.balance, status: reg.deposit.balance>=0?"LUNAS":"MASIH KURANG "+rupiah(Math.abs(reg.deposit.balance)) };
         render();
       }},"Terima Pembayaran"));
