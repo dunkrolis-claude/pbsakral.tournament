@@ -1005,9 +1005,11 @@ async function saveSchedule(){
 }
 
 function regSummary(id){ return id ? INDEX.find(x=>x.id===id) : null; }
-function participantLabel(id){
+function participantLabel(id, plain){
   const s = regSummary(id);
-  return s ? (s.player1+" / "+s.player2) : "\u2014 (kosong)";
+  if(!s) return "\u2014 (kosong)";
+  const club = (!plain && s.club) ? String(s.club).trim() : "";
+  return s.player1+" / "+s.player2+(club?" ("+club+")":"");
 }
 function registeredPoolFor(catCode){
   return INDEX.filter(r=>r.category===catCode && r.status==="REGISTERED");
@@ -1091,10 +1093,10 @@ function bracketMatchesFor(catCode){
   return list;
 }
 function matchById(catCode, id){ return (MATCHES[catCode]||[]).find(m=>m.id===id); }
-function matchSideLabel(catCode, side){
+function matchSideLabel(catCode, side, plain){
   const isDraft = (MATCHES[catCode]||[]).length===0;
   if(side.type==="participant"){
-    return side.participantId ? participantLabel(side.participantId) : (isDraft ? "Menunggu drawing" : "BYE");
+    return side.participantId ? participantLabel(side.participantId, plain) : (isDraft ? "Menunggu drawing" : "BYE");
   }
   const ref = matchById(catCode, side.matchId) || (isDraft ? bracketMatchesFor(catCode).find(x=>x.id===side.matchId) : null);
   if(!ref) return "TBD";
@@ -1993,7 +1995,7 @@ function queueRows(m, sched){
 }
 function opponentLabelFor(category, match, regId){
   const otherSide = (match.sideA.type==="participant" && match.sideA.participantId===regId) ? match.sideB : match.sideA;
-  return matchSideLabel(category, otherSide);
+  return matchSideLabel(category, otherSide, true);
 }
 function renderParticipantMatchCards(reg){
   const wrap = el("div",{});
@@ -2060,7 +2062,8 @@ function renderRegistrationStatusCard(reg){
   const head = el("div",{style:"display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:10px;gap:10px;"});
   head.appendChild(el("div",{},[
     el("div",{style:"font-size:11px;color:var(--ink-faint);font-weight:700;"},displayCode(reg.regNo)),
-    el("div",{style:"font-weight:800;font-size:15.5px;margin-top:2px;"},reg.player1+" / "+reg.player2)
+    el("div",{style:"font-weight:800;font-size:15.5px;margin-top:2px;"},reg.player1+" / "+reg.player2),
+    reg.club ? el("div",{style:"font-size:12px;color:var(--ink-dim);margin-top:2px;"},"PB: "+reg.club) : null
   ]));
   head.appendChild(statusBadge(reg.status));
   card.appendChild(head);
@@ -2505,9 +2508,9 @@ function renderPublicHasil(){
     const isWinnerB = m.winnerParticipantId===m.sideB.participantId;
     const clubA = m.sideA.type==="participant" && m.sideA.participantId ? (regSummary(m.sideA.participantId)||{}).club : "";
     const clubB = m.sideB.type==="participant" && m.sideB.participantId ? (regSummary(m.sideB.participantId)||{}).club : "";
-    row.appendChild(el("div",{class:"m-side", style:isWinnerA?"color:var(--gold-bright);":""}, matchSideLabel(m.category, m.sideA)+(clubA?" ("+clubA+")":"")));
+    row.appendChild(el("div",{class:"m-side", style:isWinnerA?"color:var(--gold-bright);":""}, matchSideLabel(m.category, m.sideA)));
     row.appendChild(el("div",{class:"m-vs"}, m.status==="WO" ? "WO" : m.scoreA+" - "+m.scoreB));
-    row.appendChild(el("div",{class:"m-side", style:isWinnerB?"color:var(--gold-bright);":""}, matchSideLabel(m.category, m.sideB)+(clubB?" ("+clubB+")":"")));
+    row.appendChild(el("div",{class:"m-side", style:isWinnerB?"color:var(--gold-bright);":""}, matchSideLabel(m.category, m.sideB)));
     if(m.kokCount){
       row.appendChild(el("div",{style:"text-align:center;font-size:10.5px;color:var(--ink-faint);margin-top:4px;"},"\ud83c\udff8 "+m.kokCount+" kok terpakai"));
     }
@@ -3092,7 +3095,7 @@ function viewAdminDetail(params){
         });
         if(!updated) return;
         applyRegFromServer(reg, updated); updateIndexEntry(reg);
-        paidReceipt = { id: reg.id, regNo: reg.regNo, name: reg.player1+" / "+reg.player2, category: cat.name, amount: reg.payment.amountPaid, method: reg.payment.method };
+        paidReceipt = { id: reg.id, regNo: reg.regNo, name: reg.player1+" / "+reg.player2+(reg.club?" ("+reg.club+")":""), category: cat.name, amount: reg.payment.amountPaid, method: reg.payment.method };
         render();
       }
     })},"Verifikasi"));
@@ -3425,7 +3428,7 @@ function renderMarkPaidModal(reg){
     if(!updated){ confirmBtn.disabled=false; confirmBtn.textContent="Simpan & Buat Kode Peserta"; return; }
     applyRegFromServer(reg, updated); updateIndexEntry(reg);
     markPaidModal = false;
-    paidReceipt = { id: reg.id, regNo: reg.regNo, name: reg.player1+" / "+reg.player2, category: cat.name, amount: amt, method: markPaidState.method, owed: regOwed(reg) };
+    paidReceipt = { id: reg.id, regNo: reg.regNo, name: reg.player1+" / "+reg.player2+(reg.club?" ("+reg.club+")":""), category: cat.name, amount: amt, method: markPaidState.method, owed: regOwed(reg) };
     render();
   });
   actions.appendChild(confirmBtn);
@@ -3739,7 +3742,7 @@ function viewAdminDrawing(){
       sel.appendChild(el("option",{value:""},"\u2014 (kosong)"));
       pool.forEach(p=>{
         if(used.has(p.id)) return;
-        sel.appendChild(el("option",{value:p.id, selected: p.id===pid?"selected":null}, p.regNo+" \u2014 "+p.player1+"/"+p.player2));
+        sel.appendChild(el("option",{value:p.id, selected: p.id===pid?"selected":null}, p.regNo+" \u2014 "+p.player1+"/"+p.player2+(p.club?" ("+p.club+")":"")));
       });
       sel.value = pid || "";
       sel.addEventListener("change", (e)=>{ drawing.slots[idx] = e.target.value || null; render(); });
@@ -3982,7 +3985,7 @@ function buildBracketPdf(JsPDF, catCode){
       const win = (side)=> m.winnerParticipantId && side.type==="participant" && side.participantId===m.winnerParticipantId;
       const done = (m.status==="FINISHED") && !m.bye;
       [[m.sideA, y, m.scoreA],[m.sideB, cy, m.scoreB]].forEach(([side, ry, sc])=>{
-        const label = matchSideLabel(catCode, side);
+        const label = matchSideLabel(catCode, side, true);
         const isBye = label==="BYE";
         const winner = win(side) && !m.bye;
         if(winner){ doc.setFillColor(...pdfTint(rgb,0.28)); doc.rect(x+1.3, ry+0.15, colW-1.3, boxH/2-0.3, "F"); }
@@ -4063,8 +4066,8 @@ function buildSchedulePdf(JsPDF, catCodes){
           doc.setTextColor(...PDF_GOLD); doc.setFontSize(8.5); doc.text(pdfTxt(r.e.court), x+5.5, y+rowH*0.67, {align:"center"}); x += cols[1].w;
           doc.setTextColor(20); doc.setFont("helvetica", big?"bold":"normal"); doc.setFontSize(8.5);
           doc.text(pdfFit(doc, ROUND_LABELS[r.m.round]+" #"+r.m.matchNo, cols[2].w-3), x+2, y+rowH*0.67); x += cols[2].w;
-          pdfNameClub(doc, matchSideLabel(code, r.m.sideA), pdfClubOf(r.m.sideA), x+2, y+rowH*0.67, cols[3].w-3, 8.5, false); x += cols[3].w;
-          pdfNameClub(doc, matchSideLabel(code, r.m.sideB), pdfClubOf(r.m.sideB), x+2, y+rowH*0.67, cols[4].w-3, 8.5, false); x += cols[4].w;
+          pdfNameClub(doc, matchSideLabel(code, r.m.sideA, true), pdfClubOf(r.m.sideA), x+2, y+rowH*0.67, cols[3].w-3, 8.5, false); x += cols[3].w;
+          pdfNameClub(doc, matchSideLabel(code, r.m.sideB, true), pdfClubOf(r.m.sideB), x+2, y+rowH*0.67, cols[4].w-3, 8.5, false); x += cols[4].w;
           doc.setDrawColor(...pdfTint(rgb,0.6)); doc.setLineWidth(0.3); doc.setFillColor(255,255,255); doc.roundedRect(x+2, y+1.3, cols[5].w-4, rowH-2.6, 1, 1, "FD");
         }
         doc.setDrawColor(228); doc.setLineWidth(0.15); doc.line(M, y+rowH, W-M, y+rowH);
@@ -5234,7 +5237,8 @@ function renderLoketCard(reg){
   const head = el("div",{style:"display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:10px;"});
   head.appendChild(el("div",{},[
     el("div",{style:"font-size:11px;color:var(--ink-faint);font-weight:700;"},displayCode(reg.regNo)),
-    el("div",{style:"font-weight:800;font-size:15.5px;margin-top:2px;"},reg.player1+" / "+reg.player2)
+    el("div",{style:"font-weight:800;font-size:15.5px;margin-top:2px;"},reg.player1+" / "+reg.player2),
+    reg.club ? el("div",{style:"font-size:12px;color:var(--ink-dim);margin-top:2px;"},"PB: "+reg.club) : null
   ]));
   head.appendChild(statusBadge(reg.status));
   c.appendChild(head);
@@ -5264,7 +5268,7 @@ function renderLoketCard(reg){
       reg.payment.settlements = (reg.payment.settlements||[]).concat([{ amount: amt, at: nowIso(), method: payMethodNow, note: "Pelunasan di Loket ("+(payMethodNow==="TRANSFER"?"transfer":"tunai")+")" }]);
       const savedOk = await persistReg(reg);
       if(!savedOk){ REG_CACHE[reg.id] = undefined; await loadRegFull(reg.id); showToast("GAGAL MENYIMPAN \u2014 uang BELUM tercatat di sistem. Jangan beri struk, coba lagi atau hubungi admin."); render(); return; }
-      loketReceipt = { name: reg.player1+" / "+reg.player2, amount: amt, label:"Pelunasan Biaya Pendaftaran ("+(payMethodNow==="TRANSFER"?"Transfer":"Tunai")+")", newBalance: reg.deposit ? reg.deposit.balance : 0, status: regOwed(reg)===0 ? "LUNAS" : "MASIH KURANG "+rupiah(regOwed(reg)) };
+      loketReceipt = { name: reg.player1+" / "+reg.player2+(reg.club?" ("+reg.club+")":""), amount: amt, label:"Pelunasan Biaya Pendaftaran ("+(payMethodNow==="TRANSFER"?"Transfer":"Tunai")+")", newBalance: reg.deposit ? reg.deposit.balance : 0, status: regOwed(reg)===0 ? "LUNAS" : "MASIH KURANG "+rupiah(regOwed(reg)) };
       render();
     }},"Terima Pelunasan"));
   }
@@ -5283,7 +5287,7 @@ function renderLoketCard(reg){
       reg.depositTransactions = [{ id:uid(), matchId:null, type:"INITIAL", amount:DEPOSIT_FEE, method:depMethodNow, note:"Deposit awal di loket ("+(depMethodNow==="TRANSFER"?"transfer":"tunai")+")", createdAt: nowIso() }];
       const savedOk = await persistReg(reg);
       if(!savedOk){ REG_CACHE[reg.id] = undefined; await loadRegFull(reg.id); showToast("GAGAL MENYIMPAN \u2014 uang BELUM tercatat di sistem. Jangan beri struk, coba lagi atau hubungi admin."); render(); return; }
-      loketReceipt = { name: reg.player1+" / "+reg.player2, amount: DEPOSIT_FEE, label:"Deposit Kok (Awal, "+(depMethodNow==="TRANSFER"?"Transfer":"Tunai")+")", newBalance: DEPOSIT_FEE, status:"LUNAS" };
+      loketReceipt = { name: reg.player1+" / "+reg.player2+(reg.club?" ("+reg.club+")":""), amount: DEPOSIT_FEE, label:"Deposit Kok (Awal, "+(depMethodNow==="TRANSFER"?"Transfer":"Tunai")+")", newBalance: DEPOSIT_FEE, status:"LUNAS" };
       render();
     }},"Terima Deposit Kok (Rp"+DEPOSIT_FEE.toLocaleString("id-ID")+")"));
   } else {
@@ -5309,7 +5313,7 @@ function renderLoketCard(reg){
         reg.depositTransactions.unshift({ id:uid(), matchId:null, type:"TOPUP", amount:amt, method:depMethodNow, note:"Pembayaran kekurangan deposit di loket ("+(depMethodNow==="TRANSFER"?"transfer":"tunai")+")", createdAt: nowIso() });
         const savedOk = await persistReg(reg);
       if(!savedOk){ REG_CACHE[reg.id] = undefined; await loadRegFull(reg.id); showToast("GAGAL MENYIMPAN \u2014 uang BELUM tercatat di sistem. Jangan beri struk, coba lagi atau hubungi admin."); render(); return; }
-        loketReceipt = { name: reg.player1+" / "+reg.player2, amount: amt, label:"Pelunasan Kekurangan Deposit ("+(depMethodNow==="TRANSFER"?"Transfer":"Tunai")+")", newBalance: reg.deposit.balance, status: reg.deposit.balance>=0?"LUNAS":"MASIH KURANG "+rupiah(Math.abs(reg.deposit.balance)) };
+        loketReceipt = { name: reg.player1+" / "+reg.player2+(reg.club?" ("+reg.club+")":""), amount: amt, label:"Pelunasan Kekurangan Deposit ("+(depMethodNow==="TRANSFER"?"Transfer":"Tunai")+")", newBalance: reg.deposit.balance, status: reg.deposit.balance>=0?"LUNAS":"MASIH KURANG "+rupiah(Math.abs(reg.deposit.balance)) };
         render();
       }},"Terima Pembayaran"));
     } else {
@@ -5611,7 +5615,7 @@ function viewAdminFinance(){
       const row = el("div",{class:"fin-row", style:"cursor:pointer;", onclick:()=>nav("admin-detail",{id:r.id})});
       row.appendChild(el("div",{},[
         el("div",{class:"fr-name"}, r.player1+" / "+r.player2),
-        el("div",{class:"fr-sub"}, (r.regNo||"Belum ada kode")+" \u00b7 "+(catByCode(r.category)||{name:r.category}).name+" \u00b7 "+(r.discountNote||"-"))
+        el("div",{class:"fr-sub"}, (r.regNo||"Belum ada kode")+" \u00b7 "+(catByCode(r.category)||{name:r.category}).name+(r.club?" \u00b7 "+r.club:"")+" \u00b7 "+(r.discountNote||"-"))
       ]));
       row.appendChild(el("div",{class:"fr-balance"}, "\u2212"+rupiah(r.discountAmount)));
       sec.appendChild(row);
@@ -5886,8 +5890,8 @@ function viewAdminRefereeSetup(params){
   }
 
   sec.appendChild(el("div",{class:"card"},[
-    el("div",{class:"kv"},[el("span",{class:"k"},"Pasangan A"),el("span",{class:"v"}, sA.player1+" / "+sA.player2)]),
-    el("div",{class:"kv"},[el("span",{class:"k"},"Pasangan B"),el("span",{class:"v"}, sB.player1+" / "+sB.player2)]),
+    el("div",{class:"kv"},[el("span",{class:"k"},"Pasangan A"),el("span",{class:"v"}, sA.player1+" / "+sA.player2+(sA.club?" ("+sA.club+")":""))]),
+    el("div",{class:"kv"},[el("span",{class:"k"},"Pasangan B"),el("span",{class:"v"}, sB.player1+" / "+sB.player2+(sB.club?" ("+sB.club+")":""))]),
   ]));
 
   let servingSide = "A";
@@ -6305,7 +6309,7 @@ const TV_SLIDE_SECONDS = 10;
 const TV_ROUND_SHORT = {R64:"R64", R32:"R32", R16:"16 Besar", QF:"Perempat Final", SF:"Semifinal", F:"FINAL"};
 function tvPairName(m, key){
   const s = m[key];
-  if(s && s.type==="participant" && s.participantId){ const r = regSummary(s.participantId); return r ? r.player1+" / "+r.player2 : "—"; }
+  if(s && s.type==="participant" && s.participantId){ const r = regSummary(s.participantId); return r ? r.player1+" / "+r.player2+(r.club?" ("+String(r.club).trim()+")":"") : "—"; }
   return "Menunggu pemenang";
 }
 function tvDone(m){ return m.status==="FINISHED" || m.status==="WO" || m.status==="CANCELLED"; }
