@@ -2092,13 +2092,12 @@ function renderRegistrationStatusCard(reg){
     c2.appendChild(el("div",{style:"font-weight:800;font-size:13.5px;margin-bottom:8px;"},"\ud83e\uddfe Rincian Biaya"));
     c2.appendChild(el("div",{class:"kv"},[el("span",{class:"k"},"Biaya Registrasi"),el("span",{class:"v", style: regOwed(reg)>0?"color:var(--danger);":""}, rupiah(reg.payment.amountPaid)+(regOwed(reg)>0 ? " \u00b7 kurang "+rupiah(regOwed(reg)) : " \u2713 Lunas"))]));
     if(reg.deposit){
-      const kokUsage = (reg.depositTransactions||[]).filter(t=>t.type==="USAGE").reduce((s,t)=>s+t.amount,0);
-      const topups = (reg.depositTransactions||[]).filter(t=>t.type==="TOPUP").reduce((s,t)=>s+t.amount,0);
-      c2.appendChild(el("div",{class:"kv"},[el("span",{class:"k"},"Deposit Kok (masuk)"),el("span",{class:"v"},rupiah(reg.deposit.initial+topups))]));
-      c2.appendChild(el("div",{class:"kv"},[el("span",{class:"k"},"Pemakaian Kok"),el("span",{class:"v", style:"color:var(--warn);"},"\u2212 "+rupiah(kokUsage))]));
-      c2.appendChild(el("div",{class:"kv"},[el("span",{class:"k"},"Sisa Deposit"),el("span",{class:"v", style: reg.deposit.balance<0?"color:var(--danger);":"color:var(--ok);"},rupiah(reg.deposit.balance))]));
-      if(reg.deposit.balance<0){
-        c2.appendChild(el("div",{class:"flag", style:"margin-top:6px;"},"Ada kekurangan "+rupiah(Math.abs(reg.deposit.balance))+" yang perlu dilunasi ke panitia di lokasi."));
+      const dss = regDepStatus(reg);
+      c2.appendChild(el("div",{class:"kv"},[el("span",{class:"k"},"Deposit Kok (masuk)"),el("span",{class:"v"},rupiah(dss.received))]));
+      c2.appendChild(el("div",{class:"kv"},[el("span",{class:"k"},"Pemakaian Kok"),el("span",{class:"v", style:"color:var(--warn);"},"\u2212 "+rupiah(dss.used))]));
+      c2.appendChild(el("div",{class:"kv"},[el("span",{class:"k"},dss.balance<0?"Kurang Bayar":(dss.balance>0?"Kelebihan Deposit":"Sisa Deposit")),el("span",{class:"v", style: dss.balance<0?"color:var(--danger);":"color:var(--ok);"},rupiah(Math.abs(dss.balance)))]));
+      if(dss.balance<0){
+        c2.appendChild(el("div",{class:"flag", style:"margin-top:6px;"},"Ada kekurangan "+rupiah(dss.shortfall)+" yang perlu dilunasi ke panitia di lokasi."));
       }
     } else {
       c2.appendChild(el("div",{class:"kv"},[el("span",{class:"k"},"Deposit Kok"),el("span",{class:"v"},"Rp"+DEPOSIT_FEE.toLocaleString("id-ID")+" tunai saat hari-H")]));
@@ -2663,8 +2662,10 @@ function viewAdminDashboard(){
   sec.appendChild(el("div",{class:"section-title", style:"margin-top:22px;"},"Keuangan"));
   const registeredList = INDEX.filter(r=>r.status==="REGISTERED");
   const totalPayment = registeredList.reduce((s,r)=>s+(r.paymentAmountPaid||0),0);
-  const depositCollected = registeredList.reduce((s,r)=>s+(r.depositInitial||0),0);
-  const depositUsage = registeredList.reduce((s,r)=>s+((r.depositInitial||0)-(r.depositBalance||0)),0);
+  const _kmap = kokUsedMap();
+  const _ds = registeredList.map(r=>depositStatus(r.id, r.depositInitial, r.depositTx, _kmap));
+  const depositCollected = _ds.reduce((s,d)=>s+d.received,0);
+  const depositUsage = _ds.reduce((s,d)=>s+(d.hasDeposit?d.used:0),0);
   const remainingLiability = depositCollected - depositUsage;
   const finGrid = el("div",{class:"stat-grid"});
   finGrid.appendChild(statCard("Total Pembayaran Registrasi", rupiah(totalPayment), true));
@@ -3138,7 +3139,8 @@ function viewAdminDetail(params){
       }},"\ud83d\udcc5 Kirim Info Jadwal Pertandingan"));
     }
     if(reg.deposit){
-      actions.appendChild(el("div",{class:"kv"},[el("span",{class:"k"},"Sisa Deposit"),el("span",{class:"v"},rupiah(reg.deposit.balance))]));
+      const dsa = regDepStatus(reg);
+      actions.appendChild(el("div",{class:"kv"},[el("span",{class:"k"},dsa.balance<0?"Kurang Bayar":(dsa.balance>0?"Kelebihan Deposit":"Sisa Deposit")),el("span",{class:"v", style: dsa.balance<0?"color:var(--danger);":"color:var(--ok);"},rupiah(Math.abs(dsa.balance)))]));
     } else {
       actions.appendChild(el("div",{class:"flag warn"},"Deposit kok belum diterima. Kumpulkan Rp"+DEPOSIT_FEE.toLocaleString("id-ID")+" tunai dari pasangan ini saat hari-H."));
       actions.appendChild(el("button",{class:"btn btn-gold btn-block", onclick:()=>openConfirm({
@@ -3528,23 +3530,54 @@ function downloadButton(catCode){
 
 /* ============ ADMIN: REKAP PEMBAYARAN (hari-H) ============ */
 let rekapCat = "ALL", rekapOnlyUnpaid = false, rekapQuery = "";
+/* Pemakaian kok dihitung langsung dari pertandingan yang SUDAH SELESAI (jumlah kok x tarif per pasangan),
+   bukan dari saldo tersimpan, supaya selalu cocok dengan hasil pertandingan. */
+function kokUsedMap(){
+  const map = {};
+  Object.keys(MATCHES||{}).forEach(code=>{
+    (MATCHES[code]||[]).forEach(m=>{
+      if(m.status!=="FINISHED") return;
+      const amt = KOK_CHARGE_PER_PAIR * (Number(m.kokCount)||1);
+      [m.sideA, m.sideB].forEach(sd=>{
+        if(sd && sd.type==="participant" && sd.participantId) map[sd.participantId] = (map[sd.participantId]||0) + amt;
+      });
+    });
+  });
+  return map;
+}
+// Deposit diterima (awal + pelunasan kekurangan) dikurangi pemakaian kok dari pertandingan.
+function depositStatus(id, initial, txList, map){
+  const init = Number(initial)||0;
+  const tx = Array.isArray(txList) ? txList : [];
+  const topups = tx.filter(t=>t.type==="TOPUP").reduce((a,t)=>a+(Number(t.amount)||0),0);
+  const received = init > 0 ? init + topups : 0;
+  const used = (map||kokUsedMap())[id] || 0;
+  const balance = received - used;
+  return { received, used, balance, hasDeposit: init > 0,
+           surplus: init > 0 && balance > 0 ? balance : 0,
+           shortfall: init > 0 && balance < 0 ? -balance : 0 };
+}
+function regDepStatus(reg){ return depositStatus(reg.id, reg.deposit ? reg.deposit.initial : 0, reg.depositTransactions); }
 /* Status bayar dihitung dari uang yang benar-benar diterima, bukan dari label PAID. */
-function payRecap(r){
+function payRecap(r, map){
   const due = Number(r.paymentAmountDue)||0, paid = Number(r.paymentAmountPaid)||0;
   const owedReg = Math.max(0, due - paid);
-  const depIn = Number(r.depositInitial)||0, depBal = Number(r.depositBalance)||0;
-  const depReceived = depIn > 0;
+  const ds = depositStatus(r.id, r.depositInitial, r.depositTx, map);
+  const depIn = ds.received, depBal = ds.balance;
+  const depReceived = ds.hasDeposit;
   const depMissing = depReceived ? 0 : DEPOSIT_FEE;
-  const kokUsed = depReceived ? Math.max(0, depIn - depBal) : 0;
-  const depDebt = depReceived && depBal < 0 ? -depBal : 0;
+  const kokUsed = ds.used;
+  const depDebt = ds.shortfall;
+  const depSurplus = ds.surplus;
   const totalKurang = owedReg + depMissing + depDebt;
-  return { due, paid, owedReg, depReceived, depIn, depBal, kokUsed, depDebt, depMissing, totalKurang, lunas: totalKurang === 0 };
+  return { due, paid, owedReg, depReceived, depIn, depBal, kokUsed, depDebt, depSurplus, depMissing, totalKurang, lunas: totalKurang === 0 };
 }
 function rekapRows(catCode, onlyUnpaid, query){
   const q = String(query||"").trim().toLowerCase();
+  const kmap = kokUsedMap();
   return INDEX.filter(r=>r.status==="REGISTERED" && !r.isDemo && (catCode==="ALL" || r.category===catCode))
     .filter(r=> !q || [r.regNo,r.player1,r.player2,r.club].join(" ").toLowerCase().includes(q))
-    .map(r=>({ r, p: payRecap(r) }))
+    .map(r=>({ r, p: payRecap(r, kmap) }))
     .filter(x=> !onlyUnpaid || !x.p.lunas)
     .sort((a,b)=> String(a.r.category).localeCompare(String(b.r.category)) || String(a.r.regNo).localeCompare(String(b.r.regNo)));
 }
@@ -3621,7 +3654,7 @@ function fillRekapBody(sec){
     const tbl = el("table",{style:"border-collapse:collapse;width:100%;font-size:12px;min-width:880px;"});
     const th = (t,al)=> el("th",{style:"text-align:"+(al||"left")+";padding:8px;border-bottom:1px solid var(--line);color:var(--ink-faint);white-space:nowrap;background:var(--bg-elev);"},t);
     const hr = el("tr",{});
-    [["Kode"],["Pemain"],["Biaya","right"],["Diterima","right"],["Sisa Daftar","right"],["Deposit","right"],["Kok Terpakai","right"],["Saldo","right"],["Total Kurang","right"],["Status"]].forEach(([t,al])=> hr.appendChild(th(t,al)));
+    [["Kode"],["Pemain"],["Biaya","right"],["Diterima","right"],["Sisa Daftar","right"],["Deposit","right"],["Kok Terpakai","right"],["Lebih / Kurang","right"],["Total Kurang","right"],["Status"]].forEach(([t,al])=> hr.appendChild(th(t,al)));
     tbl.appendChild(el("thead",{},hr));
     const tb = el("tbody",{});
     const td = (c,al,st)=> el("td",{style:"padding:8px;border-bottom:1px solid var(--line);text-align:"+(al||"left")+";"+(st||"")},c);
@@ -3634,7 +3667,7 @@ function fillRekapBody(sec){
       tr.appendChild(td(rupiah(p.owedReg),"right", p.owedReg>0?"color:var(--danger);font-weight:700;":""));
       tr.appendChild(td(p.depReceived?rupiah(p.depIn):"belum","right", p.depReceived?"":"color:var(--danger);"));
       tr.appendChild(td(rupiah(p.kokUsed),"right"));
-      tr.appendChild(td(p.depReceived?rupiah(p.depBal):"-","right", p.depBal<0?"color:var(--danger);":""));
+      tr.appendChild(td(!p.depReceived ? "-" : (p.depDebt>0 ? "Kurang "+rupiah(p.depDebt) : (p.depSurplus>0 ? "Lebih "+rupiah(p.depSurplus) : "Pas")),"right", p.depDebt>0?"color:var(--danger);font-weight:700;":(p.depSurplus>0?"color:var(--ok);font-weight:700;":"")));
       tr.appendChild(td(rupiah(p.totalKurang),"right", p.totalKurang>0?"color:var(--danger);font-weight:800;":"color:var(--ok);"));
       tr.appendChild(td(el("span",{class:"badge "+(p.lunas?"b-ok":"b-wait")},[el("span",{class:"b-dot"}), p.lunas?"LUNAS":"BELUM LUNAS"])));
       tb.appendChild(tr);
@@ -5287,15 +5320,17 @@ function renderLoketCard(reg){
       reg.depositTransactions = [{ id:uid(), matchId:null, type:"INITIAL", amount:DEPOSIT_FEE, method:depMethodNow, note:"Deposit awal di loket ("+(depMethodNow==="TRANSFER"?"transfer":"tunai")+")", createdAt: nowIso() }];
       const savedOk = await persistReg(reg);
       if(!savedOk){ REG_CACHE[reg.id] = undefined; await loadRegFull(reg.id); showToast("GAGAL MENYIMPAN \u2014 uang BELUM tercatat di sistem. Jangan beri struk, coba lagi atau hubungi admin."); render(); return; }
-      loketReceipt = { name: reg.player1+" / "+reg.player2+(reg.club?" ("+reg.club+")":""), amount: DEPOSIT_FEE, label:"Deposit Kok (Awal, "+(depMethodNow==="TRANSFER"?"Transfer":"Tunai")+")", newBalance: DEPOSIT_FEE, status:"LUNAS" };
+      loketReceipt = { name: reg.player1+" / "+reg.player2+(reg.club?" ("+reg.club+")":""), amount: DEPOSIT_FEE, label:"Deposit Kok (Awal, "+(depMethodNow==="TRANSFER"?"Transfer":"Tunai")+")", newBalance: regDepStatus(reg).balance, status: regDepStatus(reg).balance>=0?"LUNAS":"MASIH KURANG "+rupiah(regDepStatus(reg).shortfall) };
       render();
     }},"Terima Deposit Kok (Rp"+DEPOSIT_FEE.toLocaleString("id-ID")+")"));
   } else {
-    const bal = reg.deposit.balance;
-    c.appendChild(el("div",{class:"kv"},[el("span",{class:"k"},"Deposit Awal"),el("span",{class:"v"},rupiah(reg.deposit.initial))]));
-    c.appendChild(el("div",{class:"kv"},[el("span",{class:"k"},"Sisa Saat Ini"),el("span",{class:"v", style: bal<0?"color:var(--danger);":"color:var(--ok);"},rupiah(bal))]));
+    const ds = regDepStatus(reg);
+    const bal = ds.balance;
+    c.appendChild(el("div",{class:"kv"},[el("span",{class:"k"},"Deposit Diterima"),el("span",{class:"v"},rupiah(ds.received))]));
+    c.appendChild(el("div",{class:"kv"},[el("span",{class:"k"},"Kok Terpakai (dari pertandingan selesai)"),el("span",{class:"v", style:"color:var(--warn);"},"\u2212 "+rupiah(ds.used))]));
+    c.appendChild(el("div",{class:"kv"},[el("span",{class:"k"},bal<0?"Kurang Bayar":(bal>0?"Kelebihan Deposit":"Sisa Deposit")),el("span",{class:"v", style: bal<0?"color:var(--danger);":"color:var(--ok);"},rupiah(Math.abs(bal)))]));
     if(bal < 0){
-      c.appendChild(el("div",{class:"flag", style:"margin-top:8px;"},"Deposit minus \u2014 pasangan ini masih punya kekurangan "+rupiah(Math.abs(bal))+" dari pemakaian kok."));
+      c.appendChild(el("div",{class:"flag", style:"margin-top:8px;"},"KURANG BAYAR "+rupiah(Math.abs(bal))+" \u2014 pemakaian kok melebihi deposit. Tagih ke pasangan ini."));
       let topupAmount = String(Math.abs(bal));
       const topupField = el("div",{class:"field", style:"margin-top:8px;"});
       topupField.appendChild(el("label",{},"Nominal Diterima"));
@@ -5313,11 +5348,11 @@ function renderLoketCard(reg){
         reg.depositTransactions.unshift({ id:uid(), matchId:null, type:"TOPUP", amount:amt, method:depMethodNow, note:"Pembayaran kekurangan deposit di loket ("+(depMethodNow==="TRANSFER"?"transfer":"tunai")+")", createdAt: nowIso() });
         const savedOk = await persistReg(reg);
       if(!savedOk){ REG_CACHE[reg.id] = undefined; await loadRegFull(reg.id); showToast("GAGAL MENYIMPAN \u2014 uang BELUM tercatat di sistem. Jangan beri struk, coba lagi atau hubungi admin."); render(); return; }
-        loketReceipt = { name: reg.player1+" / "+reg.player2+(reg.club?" ("+reg.club+")":""), amount: amt, label:"Pelunasan Kekurangan Deposit ("+(depMethodNow==="TRANSFER"?"Transfer":"Tunai")+")", newBalance: reg.deposit.balance, status: reg.deposit.balance>=0?"LUNAS":"MASIH KURANG "+rupiah(Math.abs(reg.deposit.balance)) };
+        loketReceipt = { name: reg.player1+" / "+reg.player2+(reg.club?" ("+reg.club+")":""), amount: amt, label:"Pelunasan Kekurangan Deposit ("+(depMethodNow==="TRANSFER"?"Transfer":"Tunai")+")", newBalance: regDepStatus(reg).balance, status: regDepStatus(reg).balance>=0?"LUNAS":"MASIH KURANG "+rupiah(regDepStatus(reg).shortfall) };
         render();
       }},"Terima Pembayaran"));
     } else {
-      c.appendChild(el("div",{class:"flag ok", style:"margin-top:8px;"},"Deposit aman, tidak ada tunggakan."));
+      c.appendChild(el("div",{class:"flag ok", style:"margin-top:8px;"},(ds.surplus>0 ? "KELEBIHAN DEPOSIT "+rupiah(ds.surplus)+" \u2014 sisa ini dikembalikan ke pasangan di akhir (kok sementara terpakai "+rupiah(ds.used)+")." : "Deposit pas, tidak ada tunggakan.")));
     }
   }
   return c;
@@ -5623,8 +5658,10 @@ function viewAdminFinance(){
   }
 
   sec.appendChild(el("div",{class:"section-title", style:"margin-top:22px;"},"Rekap Deposit Kok"));
-  const depositCollected = registeredList.reduce((s,r)=>s+(r.depositInitial||0),0);
-  const depositUsage = registeredList.reduce((s,r)=>s+((r.depositInitial||0)-(r.depositBalance||0)),0);
+  const _kmap = kokUsedMap();
+  const _ds = registeredList.map(r=>depositStatus(r.id, r.depositInitial, r.depositTx, _kmap));
+  const depositCollected = _ds.reduce((s,d)=>s+d.received,0);
+  const depositUsage = _ds.reduce((s,d)=>s+(d.hasDeposit?d.used:0),0);
   const depGrid = el("div",{class:"stat-grid"});
   depGrid.appendChild(statCard("Deposit Terkumpul", rupiah(depositCollected), true));
   depGrid.appendChild(statCard("Pemakaian Deposit", rupiah(depositUsage), true));
@@ -5720,9 +5757,11 @@ function viewAdminFinance(){
   if(registeredList.length===0){
     sec.appendChild(el("div",{class:"empty"},"Belum ada peserta resmi."));
   } else {
+    const fmap = kokUsedMap();
+    const dsOf = (r)=> depositStatus(r.id, r.depositInitial, r.depositTx, fmap);
     const sorted = registeredList.slice().sort((a,b)=>{
-      const da = a.depositInitial? a.depositBalance : 0;
-      const db = b.depositInitial? b.depositBalance : 0;
+      const da = dsOf(a).hasDeposit ? dsOf(a).balance : 0;
+      const db = dsOf(b).hasDeposit ? dsOf(b).balance : 0;
       if(da<0 && db>=0) return -1;
       if(db<0 && da>=0) return 1;
       return a.regNo.localeCompare(b.regNo);
@@ -5739,15 +5778,15 @@ function viewAdminFinance(){
       let statusEl;
       if(!r.depositInitial){
         statusEl = el("div",{style:"text-align:right;"},[el("span",{class:"badge b-wait"},[el("span",{class:"b-dot"}),"Deposit Belum Diterima"])]);
-      } else if(r.depositBalance<0){
+      } else if(dsOf(r).shortfall>0){
         statusEl = el("div",{style:"text-align:right;"},[
-          el("div",{class:"fr-balance", style:"color:var(--danger);"}, rupiah(r.depositBalance)),
-          el("div",{style:"font-size:10px;color:var(--danger);font-weight:700;"},"\u26a0 KURANG BAYAR")
+          el("div",{class:"fr-balance", style:"color:var(--danger);"}, "Kurang "+rupiah(dsOf(r).shortfall)),
+          el("div",{style:"font-size:10px;color:var(--danger);font-weight:700;"},"\u26a0 KURANG BAYAR \u00b7 kok "+rupiah(dsOf(r).used))
         ]);
       } else {
         statusEl = el("div",{style:"text-align:right;"},[
-          el("div",{class:"fr-balance"}, rupiah(r.depositBalance)),
-          el("div",{style:"font-size:10px;color:var(--ok);"},"\u2713 Aman")
+          el("div",{class:"fr-balance", style:"color:var(--ok);"}, dsOf(r).surplus>0 ? "Lebih "+rupiah(dsOf(r).surplus) : "Pas"),
+          el("div",{style:"font-size:10px;color:var(--ok);"},"\u2713 "+(dsOf(r).surplus>0?"KELEBIHAN DEPOSIT":"Aman")+" \u00b7 kok "+rupiah(dsOf(r).used))
         ]);
       }
       row.appendChild(statusEl);
