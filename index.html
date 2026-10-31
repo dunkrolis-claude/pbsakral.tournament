@@ -2665,7 +2665,7 @@ function viewAdminDashboard(){
   const _kmap = kokUsedMap();
   const _ds = registeredList.map(r=>depositStatus(r.id, r.depositInitial, r.depositTx, _kmap));
   const depositCollected = _ds.reduce((s,d)=>s+d.received,0);
-  const depositUsage = _ds.reduce((s,d)=>s+(d.hasDeposit?d.used:0),0);
+  const depositUsage = _ds.reduce((s,d)=>s+(d.hasDeposit?d.used+d.refunded:0),0);
   const remainingLiability = depositCollected - depositUsage;
   const finGrid = el("div",{class:"stat-grid"});
   finGrid.appendChild(statCard("Total Pembayaran Registrasi", rupiah(totalPayment), true));
@@ -3552,8 +3552,9 @@ function depositStatus(id, initial, txList, map){
   const topups = tx.filter(t=>t.type==="TOPUP").reduce((a,t)=>a+(Number(t.amount)||0),0);
   const received = init > 0 ? init + topups : 0;
   const used = (map||kokUsedMap())[id] || 0;
-  const balance = received - used;
-  return { received, used, balance, hasDeposit: init > 0,
+  const refunded = init > 0 ? tx.filter(t=>t.type==="REFUND").reduce((a,t)=>a+(Number(t.amount)||0),0) : 0;
+  const balance = received - used - refunded;
+  return { received, used, refunded, balance, hasDeposit: init > 0,
            surplus: init > 0 && balance > 0 ? balance : 0,
            shortfall: init > 0 && balance < 0 ? -balance : 0 };
 }
@@ -3568,9 +3569,9 @@ function payRecap(r, map){
   const depMissing = depReceived ? 0 : DEPOSIT_FEE;
   const kokUsed = ds.used;
   const depDebt = ds.shortfall;
-  const depSurplus = ds.surplus;
+  const depSurplus = ds.surplus; const depRefunded = ds.refunded;
   const totalKurang = owedReg + depMissing + depDebt;
-  return { due, paid, owedReg, depReceived, depIn, depBal, kokUsed, depDebt, depSurplus, depMissing, totalKurang, lunas: totalKurang === 0 };
+  return { due, paid, owedReg, depReceived, depIn, depBal, kokUsed, depDebt, depSurplus, depRefunded, depMissing, totalKurang, lunas: totalKurang === 0 };
 }
 function rekapRows(catCode, onlyUnpaid, query){
   const q = String(query||"").trim().toLowerCase();
@@ -3667,7 +3668,7 @@ function fillRekapBody(sec){
       tr.appendChild(td(rupiah(p.owedReg),"right", p.owedReg>0?"color:var(--danger);font-weight:700;":""));
       tr.appendChild(td(p.depReceived?rupiah(p.depIn):"belum","right", p.depReceived?"":"color:var(--danger);"));
       tr.appendChild(td(rupiah(p.kokUsed),"right"));
-      tr.appendChild(td(!p.depReceived ? "-" : (p.depDebt>0 ? "Kurang "+rupiah(p.depDebt) : (p.depSurplus>0 ? "Lebih "+rupiah(p.depSurplus) : "Pas")),"right", p.depDebt>0?"color:var(--danger);font-weight:700;":(p.depSurplus>0?"color:var(--ok);font-weight:700;":"")));
+      tr.appendChild(td(!p.depReceived ? "-" : (p.depDebt>0 ? "Kurang "+rupiah(p.depDebt) : (p.depSurplus>0 ? "Lebih "+rupiah(p.depSurplus) : (p.depRefunded>0 ? "Dikembalikan "+rupiah(p.depRefunded) : "Pas"))),"right", p.depDebt>0?"color:var(--danger);font-weight:700;":(p.depSurplus>0?"color:var(--ok);font-weight:700;":"")));
       tr.appendChild(td(rupiah(p.totalKurang),"right", p.totalKurang>0?"color:var(--danger);font-weight:800;":"color:var(--ok);"));
       tr.appendChild(td(el("span",{class:"badge "+(p.lunas?"b-ok":"b-wait")},[el("span",{class:"b-dot"}), p.lunas?"LUNAS":"BELUM LUNAS"])));
       tb.appendChild(tr);
@@ -5328,6 +5329,7 @@ function renderLoketCard(reg){
     const bal = ds.balance;
     c.appendChild(el("div",{class:"kv"},[el("span",{class:"k"},"Deposit Diterima"),el("span",{class:"v"},rupiah(ds.received))]));
     c.appendChild(el("div",{class:"kv"},[el("span",{class:"k"},"Kok Terpakai (dari pertandingan selesai)"),el("span",{class:"v", style:"color:var(--warn);"},"\u2212 "+rupiah(ds.used))]));
+    if(ds.refunded>0) c.appendChild(el("div",{class:"kv"},[el("span",{class:"k"},"Sudah Dikembalikan"),el("span",{class:"v", style:"color:var(--warn);"},"\u2212 "+rupiah(ds.refunded))]));
     c.appendChild(el("div",{class:"kv"},[el("span",{class:"k"},bal<0?"Kurang Bayar":(bal>0?"Kelebihan Deposit":"Sisa Deposit")),el("span",{class:"v", style: bal<0?"color:var(--danger);":"color:var(--ok);"},rupiah(Math.abs(bal)))]));
     if(bal < 0){
       c.appendChild(el("div",{class:"flag", style:"margin-top:8px;"},"KURANG BAYAR "+rupiah(Math.abs(bal))+" \u2014 pemakaian kok melebihi deposit. Tagih ke pasangan ini."));
@@ -5353,6 +5355,38 @@ function renderLoketCard(reg){
       }},"Terima Pembayaran"));
     } else {
       c.appendChild(el("div",{class:"flag ok", style:"margin-top:8px;"},(ds.surplus>0 ? "KELEBIHAN DEPOSIT "+rupiah(ds.surplus)+" \u2014 sisa ini dikembalikan ke pasangan di akhir (kok sementara terpakai "+rupiah(ds.used)+")." : "Deposit pas, tidak ada tunggakan.")));
+      if(ds.surplus>0){
+        const pending = participantMatches(reg.id, reg.category).filter(m=>m.status!=="FINISHED" && m.status!=="WO" && m.status!=="CANCELLED" && !m.bye);
+        if(pending.length>0) c.appendChild(el("div",{class:"flag warn", style:"margin-top:6px;"},"Pasangan ini masih punya pertandingan yang belum selesai \u2014 kok bisa terpakai lagi. Sebaiknya kembalikan setelah selesai bermain."));
+        let refundAmount = String(ds.surplus);
+        const rf = el("div",{class:"field", style:"margin-top:8px;"});
+        rf.appendChild(el("label",{},"Nominal Dikembalikan"));
+        const rin = el("input",{type:"number", min:"1", max:String(ds.surplus), value:refundAmount});
+        rin.addEventListener("input",(e)=>{ refundAmount = e.target.value; });
+        rf.appendChild(rin);
+        c.appendChild(depositMethodPicker());
+        c.appendChild(rf);
+        c.appendChild(el("button",{class:"btn btn-outline btn-block", style:"margin-top:8px;", onclick: ()=>{
+          const amt = Number(refundAmount);
+          if(!Number.isInteger(amt) || amt<=0 || amt>ds.surplus){ showToast("Nominal harus 1 sampai "+rupiah(ds.surplus)+"."); return; }
+          const depMethodNow = loketDepMethod === "TRANSFER" ? "TRANSFER" : "CASH";
+          openConfirm({
+            title:"Keluarkan Sisa Deposit?",
+            body:"Kembalikan "+rupiah(amt)+" ("+(depMethodNow==="TRANSFER"?"transfer":"tunai")+") kepada "+reg.player1+" / "+reg.player2+". Pastikan uang sudah diserahkan.",
+            confirmLabel:"Ya, Sudah Dikembalikan",
+            onConfirm: async ()=>{
+              const before = { deposit: Object.assign({}, reg.deposit), tx: (reg.depositTransactions||[]).slice() };
+              reg.deposit.balance -= amt;
+              reg.depositTransactions = reg.depositTransactions || [];
+              reg.depositTransactions.unshift({ id:uid(), matchId:null, type:"REFUND", amount:amt, method:depMethodNow, note:"Pengembalian sisa deposit ("+(depMethodNow==="TRANSFER"?"transfer":"tunai")+")", createdAt: nowIso() });
+              const savedOk = await persistReg(reg);
+              if(!savedOk){ REG_CACHE[reg.id] = undefined; await loadRegFull(reg.id); showToast("GAGAL MENYIMPAN \u2014 pengembalian BELUM tercatat. Jangan serahkan uang dulu, coba lagi."); render(); return; }
+              loketReceipt = { refund:true, name: reg.player1+" / "+reg.player2+(reg.club?" ("+reg.club+")":""), amount: amt, label:"Pengembalian Sisa Deposit ("+(depMethodNow==="TRANSFER"?"Transfer":"Tunai")+")", newBalance: regDepStatus(reg).balance, status:"LUNAS" };
+              render();
+            }
+          });
+        }},"\ud83d\udcb8 Keluarkan Sisa Deposit"));
+      }
     }
   }
   return c;
@@ -5361,7 +5395,7 @@ function renderLoketReceiptModal(){
   const r = loketReceipt;
   const overlay = el("div",{class:"modal-overlay", onclick:(e)=>{ if(e.target===overlay){ loketReceipt=null; render(); } }});
   const modal = el("div",{class:"modal"});
-  modal.appendChild(el("h3",{},"\u2705 Tanda Terima"));
+  modal.appendChild(el("h3",{},r.refund ? "\u2705 Bukti Pengembalian Deposit" : "\u2705 Tanda Terima"));
   modal.appendChild(el("div",{class:"card", style:"margin-bottom:14px;"},[
     el("div",{class:"kv"},[el("span",{class:"k"},"Nama"),el("span",{class:"v"},r.name)]),
     el("div",{class:"kv"},[el("span",{class:"k"},r.label),el("span",{class:"v", style:"color:var(--gold-bright);"},rupiah(r.amount))]),
@@ -5593,6 +5627,7 @@ function depositSplit(list){
     tx.forEach(t=>{
       if(t.type==="INITIAL"){ const a = Number(t.amount)||0; initLeft -= a; if(t.method==="TRANSFER") transfer += a; else cash += a; }
       else if(t.type==="TOPUP"){ const a = Number(t.amount)||0; if(t.method==="TRANSFER") transfer += a; else cash += a; }
+      else if(t.type==="REFUND"){ const a = Number(t.amount)||0; if(t.method==="TRANSFER") transfer -= a; else cash -= a; }
     });
     if(initLeft>0) cash += initLeft;
   });
@@ -5661,7 +5696,7 @@ function viewAdminFinance(){
   const _kmap = kokUsedMap();
   const _ds = registeredList.map(r=>depositStatus(r.id, r.depositInitial, r.depositTx, _kmap));
   const depositCollected = _ds.reduce((s,d)=>s+d.received,0);
-  const depositUsage = _ds.reduce((s,d)=>s+(d.hasDeposit?d.used:0),0);
+  const depositUsage = _ds.reduce((s,d)=>s+(d.hasDeposit?d.used+d.refunded:0),0);
   const depGrid = el("div",{class:"stat-grid"});
   depGrid.appendChild(statCard("Deposit Terkumpul", rupiah(depositCollected), true));
   depGrid.appendChild(statCard("Pemakaian Deposit", rupiah(depositUsage), true));
@@ -5672,7 +5707,7 @@ function viewAdminFinance(){
   depSplitGrid.appendChild(statCard("\ud83d\udcb5 Deposit Masuk Tunai", rupiah(depSplit.cash), true));
   depSplitGrid.appendChild(statCard("\ud83c\udfe6 Deposit Masuk Transfer", rupiah(depSplit.transfer), true));
   sec.appendChild(depSplitGrid);
-  sec.appendChild(el("div",{class:"hint", style:"margin-top:4px;color:var(--ink-faint);font-size:11px;"},"Deposit yang dicatat sebelum ada pilihan metode dihitung sebagai tunai. Angka ini terpisah dari saldo kas di atas."));
+  sec.appendChild(el("div",{class:"hint", style:"margin-top:4px;color:var(--ink-faint);font-size:11px;"},"Deposit yang dicatat sebelum ada pilihan metode dihitung sebagai tunai. Sudah dikurangi deposit yang dikembalikan. Angka ini terpisah dari saldo kas di atas."));
 
   sec.appendChild(el("div",{class:"section-title", style:"margin-top:22px;"},"Rekap Pengeluaran"));
   const cashExpense = EXPENSES.filter(e=>e.source!=="BANK").reduce((s,e)=>s+(e.amount||0),0);
@@ -5785,7 +5820,7 @@ function viewAdminFinance(){
         ]);
       } else {
         statusEl = el("div",{style:"text-align:right;"},[
-          el("div",{class:"fr-balance", style:"color:var(--ok);"}, dsOf(r).surplus>0 ? "Lebih "+rupiah(dsOf(r).surplus) : "Pas"),
+          el("div",{class:"fr-balance", style:"color:var(--ok);"}, dsOf(r).surplus>0 ? "Lebih "+rupiah(dsOf(r).surplus) : (dsOf(r).refunded>0 ? "Dikembalikan "+rupiah(dsOf(r).refunded) : "Pas")),
           el("div",{style:"font-size:10px;color:var(--ok);"},"\u2713 "+(dsOf(r).surplus>0?"KELEBIHAN DEPOSIT":"Aman")+" \u00b7 kok "+rupiah(dsOf(r).used))
         ]);
       }
