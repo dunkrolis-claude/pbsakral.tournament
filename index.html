@@ -3627,6 +3627,7 @@ function viewAdminRekap(){
   bar.appendChild(sbWrap);
   bar.appendChild(el("button",{class: "btn btn-sm "+(rekapOnlyUnpaid?"btn-gold":"btn-outline"), onclick:()=>{ rekapOnlyUnpaid = !rekapOnlyUnpaid; render(); }}, rekapOnlyUnpaid ? "Hanya belum lunas ✓" : "Hanya belum lunas"));
   bar.appendChild(el("button",{class:"btn btn-outline btn-sm", onclick:downloadRekap},"Unduh CSV"));
+  bar.appendChild(el("button",{class:"btn btn-outline btn-sm", title:"Formulir kosong untuk dicatat manual", onclick:()=>downloadPdf("rekap-manual", rekapCat==="ALL" ? META.categories.map(c=>c.code) : [rekapCat])},"\u2b07 PDF Cadangan Manual"));
   sec.appendChild(bar);
   const body = el("div",{});
   sec.appendChild(body);
@@ -4208,12 +4209,73 @@ function buildScheduleGridPdf(JsPDF, catCodes){
   return doc;
 }
 
+/* PDF Rekap Bayar untuk cadangan MANUAL: tidak dihitung otomatis. Deposit tertulis 0; pemakaian kok, keterangan bayar, dan sisa deposit diisi tangan. */
+function buildRekapManualPdf(JsPDF, catCodes){
+  const doc = new JsPDF({orientation:"landscape", unit:"mm", format:"a4"});
+  const W = doc.internal.pageSize.getWidth(), H = doc.internal.pageSize.getHeight();
+  const M = 8, rowH = 8.4;
+  const cols = [ {t:"NO",w:11,al:"c"}, {t:"KODE",w:20,al:"l"}, {t:"",w:0,al:"l"}, {t:"DEPOSIT",w:24,al:"c"}, {t:"PEMAKAIAN KOK",w:36,al:"c"}, {t:"KETERANGAN BAYAR",w:52,al:"c"}, {t:"SISA DEPOSIT",w:36,al:"c"} ];
+  cols[2].t = "PEMAIN  /  PB";
+  const fixed = cols.reduce((a,c)=>a+c.w,0); cols[2].w = W - 2*M - fixed;
+  let first = true, any = false;
+  catCodes.forEach(code=>{
+    const cat = catByCode(code), rgb = pdfCatRgb(code);
+    const list = INDEX.filter(r=>r.status==="REGISTERED" && !r.isDemo && r.category===code)
+      .sort((a,b)=> String(a.regNo).localeCompare(String(b.regNo)));
+    if(!list.length) return;
+    any = true;
+    if(!first) doc.addPage(); first = false;
+    const header = ()=>{
+      pdfHeaderBand(doc, W, "REKAP BAYAR  -  CADANGAN MANUAL", "Isi tangan: pemakaian kok, keterangan bayar, sisa deposit  |  Deposit awal tercatat 0  |  "+list.length+" pasangan", cat);
+      const y = 32;
+      doc.setFillColor(...rgb); doc.rect(M, y, W-2*M, rowH, "F");
+      doc.setTextColor(...pdfTextOn(rgb)); doc.setFont("helvetica","bold"); doc.setFontSize(8.5);
+      let x = M;
+      cols.forEach(c=>{ doc.text(pdfTxt(c.t), c.al==="c" ? x+c.w/2 : x+2, y+rowH*0.66, c.al==="c" ? {align:"center"} : undefined); x += c.w; });
+      doc.setTextColor(0);
+      return y+rowH;
+    };
+    let y = header(), n = 0;
+    list.forEach(r=>{
+      if(y+rowH > H-7-3){ doc.addPage(); y = header(); }
+      n++;
+      if(n%2===0){ doc.setFillColor(...pdfTint(rgb,0.07)); doc.rect(M, y, W-2*M, rowH, "F"); }
+      doc.setFillColor(...rgb); doc.rect(M, y, 1.2, rowH, "F");
+      let x = M;
+      doc.setFont("helvetica","normal"); doc.setFontSize(8.5); doc.setTextColor(60);
+      doc.text(String(n), x+cols[0].w/2, y+rowH*0.64, {align:"center"}); x += cols[0].w;
+      doc.setFont("helvetica","bold"); doc.setTextColor(30);
+      doc.text(pdfTxt(displayCode(r.regNo)), x+2, y+rowH*0.64); x += cols[1].w;
+      pdfNameClub(doc, r.player1+" / "+r.player2, r.club ? String(r.club).trim() : "", x+2, y+rowH*0.64, cols[2].w-3, 9, false); x += cols[2].w;
+      doc.setFont("helvetica","bold"); doc.setFontSize(9); doc.setTextColor(30);
+      doc.text("0", x+cols[3].w/2, y+rowH*0.64, {align:"center"}); x += cols[3].w;
+      // kolom isi tangan: kotak kosong
+      doc.setDrawColor(190); doc.setLineWidth(0.25); doc.setFillColor(255,255,255);
+      doc.roundedRect(x+3, y+1.2, cols[4].w-6, rowH-2.4, 1, 1, "FD"); x += cols[4].w;
+      // keterangan: [ ] Tunai   [ ] TRF
+      const bx = x + 6, by = y + rowH/2 - 1.9;
+      doc.setDrawColor(90); doc.setLineWidth(0.3);
+      doc.rect(bx, by, 3.8, 3.8, "S"); doc.rect(bx+cols[5].w/2-3, by, 3.8, 3.8, "S");
+      doc.setFont("helvetica","normal"); doc.setFontSize(8.5); doc.setTextColor(40);
+      doc.text("Tunai", bx+5.4, y+rowH*0.64); doc.text("TRF", bx+cols[5].w/2-3+5.4, y+rowH*0.64); x += cols[5].w;
+      doc.setDrawColor(190); doc.setLineWidth(0.25); doc.setFillColor(255,255,255);
+      doc.roundedRect(x+3, y+1.2, cols[6].w-6, rowH-2.4, 1, 1, "FD");
+      doc.setDrawColor(228); doc.setLineWidth(0.15); doc.line(M, y+rowH, W-M, y+rowH);
+      y += rowH;
+    });
+  });
+  if(!any){ pdfHeaderBand(doc, W, "REKAP BAYAR", "Belum ada peserta resmi", catByCode(catCodes[0])); }
+  pdfFooters(doc, W, H, null);
+  return doc;
+}
+
 async function downloadPdf(kind, codes){
   showToast("Menyiapkan PDF...");
   try{
     const JsPDF = await loadJsPdf();
     let doc, name;
-    if(kind==="bracket"){ doc = buildBracketPdf(JsPDF, codes[0]); name = pdfFileName("Bracket", catByCode(codes[0]).name); }
+    if(kind==="rekap-manual"){ doc = buildRekapManualPdf(JsPDF, codes); name = pdfFileName("Rekap-Bayar-Manual", codes.length===1 ? catByCode(codes[0]).name : "Semua-Level"); }
+    else if(kind==="bracket"){ doc = buildBracketPdf(JsPDF, codes[0]); name = pdfFileName("Bracket", catByCode(codes[0]).name); }
     else if(kind==="schedule-list"){ doc = buildScheduleListPdf(JsPDF, codes); name = pdfFileName("Jadwal-Daftar", codes.length===1 ? catByCode(codes[0]).name : "Semua-Level"); }
     else { doc = buildScheduleGridPdf(JsPDF, codes); name = pdfFileName("Jadwal", codes.length===1 ? catByCode(codes[0]).name : "Semua-Level"); }
     doc.save(name);
