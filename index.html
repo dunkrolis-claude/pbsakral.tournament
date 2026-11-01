@@ -1132,7 +1132,7 @@ function effectiveReferee(match){
 function schedResultInfo(m){
   if(!m) return null;
   if(m.status==="WO") return { done:true, text:"WO" };
-  if(m.status==="FINISHED") return { done:true, text:(m.scoreA!=null && m.scoreB!=null) ? m.scoreA+" - "+m.scoreB : "Selesai" };
+  if(m.status==="FINISHED") return { done:true, text:((m.scoreA!=null && m.scoreB!=null) ? m.scoreA+" - "+m.scoreB : "Selesai")+" \u00b7 "+(m.kokCount||1)+" kok" };
   if(m.status==="ON_COURT") return { live:true, text:"\u25b6 Sedang main" };
   if(m.status==="CALLING") return { live:true, text:"\ud83d\udce3 Dipanggil" };
   return null;
@@ -5334,6 +5334,14 @@ function viewAdminMatchControl(){
   if(entries.length===0){
     sec.appendChild(el("div",{class:"empty"},"Belum ada match terjadwal di hari ini."));
   }
+  { const kokOf = (list)=> list.filter(e=>e.match.status==="FINISHED").reduce((n,e)=> n + (e.match.kokCount||1), 0);
+    const doneDay = entries.filter(e=>e.match.status==="FINISHED").length;
+    const allEntries = SCHEDULE.map(s=>({match: matchById(s.category, s.matchId)})).filter(e=>e.match);
+    const sum = el("div",{class:"card", style:"margin-bottom:12px;display:flex;gap:24px;flex-wrap:wrap;align-items:center;"},[
+      el("div",{},[el("div",{style:"font-size:11px;color:var(--ink-faint);font-weight:700;"},"KOK HARI INI"), el("div",{style:"font-family:'Anton';font-size:22px;color:var(--gold-bright);"}, kokOf(entries)+" kok"), el("div",{style:"font-size:11px;color:var(--ink-dim);"}, doneDay+" match selesai")]),
+      el("div",{},[el("div",{style:"font-size:11px;color:var(--ink-faint);font-weight:700;"},"TOTAL KOK TURNAMEN"), el("div",{style:"font-family:'Anton';font-size:22px;color:var(--ink);"}, kokOf(allEntries)+" kok"), el("div",{style:"font-size:11px;color:var(--ink-dim);"}, allEntries.filter(e=>e.match.status==="FINISHED").length+" match selesai")])
+    ]);
+    sec.appendChild(sum); }
 
   entries.forEach(({sched, match})=>{
     const cat = catByCode(match.category);
@@ -5348,6 +5356,7 @@ function viewAdminMatchControl(){
     card.appendChild(el("div",{class:"mc-side"+(isWinnerA?" winner":"")}, matchSideLabel(match.category, match.sideA)));
     if(match.status==="FINISHED"){
       card.appendChild(el("div",{class:"mc-score"}, match.scoreA+" \u2013 "+match.scoreB));
+      card.appendChild(el("div",{style:"text-align:center;font-size:11.5px;color:var(--ink-dim);font-weight:700;margin-top:2px;"}, "\ud83c\udff8 "+(match.kokCount||1)+" kok terpakai"));
     } else {
       card.appendChild(el("div",{class:"m-vs"},"vs"));
     }
