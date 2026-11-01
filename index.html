@@ -1132,7 +1132,7 @@ function effectiveReferee(match){
 function schedResultInfo(m){
   if(!m) return null;
   if(m.status==="WO") return { done:true, text:"WO" };
-  if(m.status==="FINISHED") return { done:true, text:(m.scoreA!=null && m.scoreB!=null) ? m.scoreA+" - "+m.scoreB : "Selesai" };
+  if(m.status==="FINISHED") return { done:true, text:((m.scoreA!=null && m.scoreB!=null) ? m.scoreA+" - "+m.scoreB : "Selesai")+" \u00b7 "+(m.kokCount||1)+" kok" };
   if(m.status==="ON_COURT") return { live:true, text:"\u25b6 Sedang main" };
   if(m.status==="CALLING") return { live:true, text:"\ud83d\udce3 Dipanggil" };
   return null;
@@ -5269,6 +5269,21 @@ async function mcWo(catCode, match, winnerKey){
   showToast("Walkover dicatat.");
   render();
 }
+/* Koreksi skor match yang sudah selesai: tanpa buka kembali. Pemenang boleh berubah selama babak berikutnya belum dimainkan. */
+async function mcEditResult(catCode, match, scoreA, scoreB, kokCount){
+  const newWin = (scoreA > scoreB ? match.sideA : match.sideB).participantId;
+  if(newWin !== match.winnerParticipantId && !canReopenMatch(catCode, match)){
+    showToast("Pemenang tidak bisa diubah karena babak berikutnya sudah dimainkan.");
+    return false;
+  }
+  if(match.depositCharged){
+    await reverseDepositForMatch(match);
+    match.depositCharged = false;
+  }
+  match.kokCount = null;
+  await mcFinish(catCode, match, scoreA, scoreB, kokCount);
+  return true;
+}
 async function mcCancel(catCode, match){
   match.status = "CANCELLED";
   await saveMatches(); showToast("Match dibatalkan."); render();
@@ -5319,6 +5334,14 @@ function viewAdminMatchControl(){
   if(entries.length===0){
     sec.appendChild(el("div",{class:"empty"},"Belum ada match terjadwal di hari ini."));
   }
+  { const kokOf = (list)=> list.filter(e=>e.match.status==="FINISHED").reduce((n,e)=> n + (e.match.kokCount||1), 0);
+    const doneDay = entries.filter(e=>e.match.status==="FINISHED").length;
+    const allEntries = SCHEDULE.map(s=>({match: matchById(s.category, s.matchId)})).filter(e=>e.match);
+    const sum = el("div",{class:"card", style:"margin-bottom:12px;display:flex;gap:24px;flex-wrap:wrap;align-items:center;"},[
+      el("div",{},[el("div",{style:"font-size:11px;color:var(--ink-faint);font-weight:700;"},"KOK HARI INI"), el("div",{style:"font-family:'Anton';font-size:22px;color:var(--gold-bright);"}, kokOf(entries)+" kok"), el("div",{style:"font-size:11px;color:var(--ink-dim);"}, doneDay+" match selesai")]),
+      el("div",{},[el("div",{style:"font-size:11px;color:var(--ink-faint);font-weight:700;"},"TOTAL KOK TURNAMEN"), el("div",{style:"font-family:'Anton';font-size:22px;color:var(--ink);"}, kokOf(allEntries)+" kok"), el("div",{style:"font-size:11px;color:var(--ink-dim);"}, allEntries.filter(e=>e.match.status==="FINISHED").length+" match selesai")])
+    ]);
+    sec.appendChild(sum); }
 
   entries.forEach(({sched, match})=>{
     const cat = catByCode(match.category);
@@ -5333,6 +5356,7 @@ function viewAdminMatchControl(){
     card.appendChild(el("div",{class:"mc-side"+(isWinnerA?" winner":"")}, matchSideLabel(match.category, match.sideA)));
     if(match.status==="FINISHED"){
       card.appendChild(el("div",{class:"mc-score"}, match.scoreA+" \u2013 "+match.scoreB));
+      card.appendChild(el("div",{style:"text-align:center;font-size:11.5px;color:var(--ink-dim);font-weight:700;margin-top:2px;"}, "\ud83c\udff8 "+(match.kokCount||1)+" kok terpakai"));
     } else {
       card.appendChild(el("div",{class:"m-vs"},"vs"));
     }
@@ -5360,6 +5384,7 @@ function viewAdminMatchControl(){
       actions.appendChild(el("button",{class:"btn btn-info btn-xs", onclick:()=>mcCall(match.category, match)},"Panggil Lagi"));
       if(bothKnown) actions.appendChild(el("button",{class:"btn btn-outline btn-xs", onclick:()=>{ woModalTarget={category:match.category, matchId:match.id}; render(); }},"WO"));
     } else if(status==="FINISHED" || status==="WO" || status==="CANCELLED"){
+      if(status==="FINISHED" && bothKnown) actions.appendChild(el("button",{class:"btn btn-ok btn-xs", onclick:()=>{ scoreModalTarget={category:match.category, matchId:match.id}; render(); }},"Edit Skor"));
       actions.appendChild(el("button",{class:"btn btn-outline btn-xs", onclick:()=>openConfirm({
         title:"Buka Kembali Match?",
         body: status==="FINISHED" ? "Skor & pemenang akan dihapus, deposit kok yang sudah terpotong akan dikembalikan." : "Status akan direset ke Terjadwal.",
@@ -5388,23 +5413,24 @@ function renderScoreModal(){
   const m = matchById(category, matchId);
   const overlay = el("div",{class:"modal-overlay", onclick:(e)=>{ if(e.target===overlay){ scoreModalTarget=null; render(); } }});
   const modal = el("div",{class:"modal"});
-  modal.appendChild(el("h3",{},"Input Skor Akhir"));
+  const isEdit = m.status==="FINISHED";
+  modal.appendChild(el("h3",{}, isEdit ? "Edit Skor Akhir" : "Input Skor Akhir"));
   modal.appendChild(el("p",{}, matchSideLabel(category,m.sideA) + " vs " + matchSideLabel(category,m.sideB)));
-  let sa = "", sb = "";
+  let sa = isEdit && m.scoreA!=null ? String(m.scoreA) : "", sb = isEdit && m.scoreB!=null ? String(m.scoreB) : "";
   const fa = el("div",{class:"field"});
   fa.appendChild(el("label",{}, matchSideLabel(category,m.sideA)));
-  const inA = el("input",{type:"number", placeholder:"Skor"});
+  const inA = el("input",{type:"number", placeholder:"Skor", value:sa});
   inA.addEventListener("input",(e)=>{ sa = e.target.value; });
   fa.appendChild(inA); modal.appendChild(fa);
   const fb = el("div",{class:"field"});
   fb.appendChild(el("label",{}, matchSideLabel(category,m.sideB)));
-  const inB = el("input",{type:"number", placeholder:"Skor"});
+  const inB = el("input",{type:"number", placeholder:"Skor", value:sb});
   inB.addEventListener("input",(e)=>{ sb = e.target.value; });
   fb.appendChild(inB); modal.appendChild(fb);
-  let kok = "1";
+  let kok = isEdit && m.kokCount ? String(m.kokCount) : "1";
   const fk = el("div",{class:"field"});
   fk.appendChild(el("label",{},"Jumlah Kok Terpakai"));
-  const inK = el("input",{type:"number", value:"1", min:"1"});
+  const inK = el("input",{type:"number", value:kok, min:"1"});
   inK.addEventListener("input",(e)=>{ kok = e.target.value; });
   fk.appendChild(inK);
   fk.appendChild(el("div",{class:"hint"},"Dibebankan Rp10.000/kok ke masing-masing pasangan."));
@@ -5428,8 +5454,9 @@ function renderScoreModal(){
     }
     renderScoreModal._warned = null;
     scoreModalTarget = null;
-    await mcFinish(category, m, na, nb, nk);
-  }},"Simpan Skor"));
+    if(isEdit){ const ok = await mcEditResult(category, m, na, nb, nk); if(!ok) render(); }
+    else await mcFinish(category, m, na, nb, nk);
+  }}, isEdit ? "Simpan Perubahan" : "Simpan Skor"));
   modal.appendChild(actions);
   overlay.appendChild(modal);
   return overlay;
