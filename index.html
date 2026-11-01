@@ -694,8 +694,17 @@ let RENT_END = {};
 function rentEndOf(day, court){ const d = RENT_END[day]; const v = d ? d[court] : undefined; return (typeof v==="number") ? v : Infinity; }
 function isUnrented(day, idx, court){ return idx >= rentEndOf(day, court); }
 function isomaOf(day){ const c = ISOMA[day]; return (c && c.len>0) ? c : null; }
-function isBreakSlot(day, idx){ const c = isomaOf(day); return !!c && idx>=c.start && idx<c.start+c.len; }
-function gridSlotsFor(day){ const c = isomaOf(day); return Math.min(SLOTS_PER_DAY, BASE_SLOTS_PER_DAY + (c?c.len:0)); }
+/* Break tambahan (mis. 18.00-18.30): TIDAK menggeser pertandingan, hanya slot yang dikosongkan. Disimpan di schedule.data.breaks. */
+let BREAKS = {}; // { "2": [{start, len}] }
+function extraBreaksOf(day){ const a = BREAKS[day]; return Array.isArray(a) ? a.filter(b=>b && b.len>0).sort((x,y)=>x.start-y.start) : []; }
+function breakInfoAt(day, idx){
+  const c = isomaOf(day);
+  if(c && idx>=c.start && idx<c.start+c.len) return { start:c.start, len:c.len, label:"ISOMA", icon:"\ud83c\udf71", kind:"isoma" };
+  const b = extraBreaksOf(day).find(b=>idx>=b.start && idx<b.start+b.len);
+  return b ? { start:b.start, len:b.len, label:"BREAK", icon:"\u2615", kind:"break" } : null;
+}
+function isBreakSlot(day, idx){ return !!breakInfoAt(day, idx); }
+function gridSlotsFor(day){ const c = isomaOf(day); const ex = extraBreaksOf(day).reduce((n,b)=>n+b.len,0); return Math.min(SLOTS_PER_DAY, BASE_SLOTS_PER_DAY + (c?c.len:0) + ex); }
 // indeks slot template (tanpa ISOMA) -> indeks sebenarnya, dan sebaliknya
 function planShiftIdx(day, rawIdx){ const c = isomaOf(day); return (c && rawIdx>=c.start) ? rawIdx + c.len : rawIdx; }
 function planAtCell(day, idx, court){
@@ -921,6 +930,7 @@ function applyPhase2(drRows, maRows, schRow){
   });
   SCHEDULE = schRow ? (schRow.data.list||[]) : [];
   ISOMA = (schRow && schRow.data && schRow.data.isoma) || {};
+  BREAKS = (schRow && schRow.data && schRow.data.breaks) || {};
   RENT_END = (schRow && schRow.data && schRow.data.rentEnd) || {};
   REF_DEFAULTS = Object.assign({ A:"", B:"", C:"", D:"", E:"", RESERVE:"" }, (schRow && schRow.data.refDefaults) || {});
   SCHEDULE_VERSION = schRow ? schRow.version : 1;
@@ -952,6 +962,7 @@ async function loadPhase2(){
     else { const { data, error } = await sb.from("schedule").select("*").eq("id",1).maybeSingle(); if(error) throw error; row = data; }
     SCHEDULE = row ? (row.data.list||[]) : [];
     ISOMA = (row && row.data && row.data.isoma) || {};
+    BREAKS = (row && row.data && row.data.breaks) || {};
     RENT_END = (row && row.data && row.data.rentEnd) || {};
     REF_DEFAULTS = Object.assign({ A:"", B:"", C:"", D:"", E:"", RESERVE:"" }, (row && row.data.refDefaults) || {});
     SCHEDULE_LOG = (row && row.data && row.data.log) || [];
@@ -992,7 +1003,7 @@ async function saveMatches(onlyCat){
 }
 async function saveSchedule(){
   try{
-    const result = await apiMutate("SAVE_SCHEDULE", { expectedVersion: SCHEDULE_VERSION||1, data: {list: SCHEDULE, refDefaults: REF_DEFAULTS, log: SCHEDULE_LOG, isoma: ISOMA, rentEnd: RENT_END} });
+    const result = await apiMutate("SAVE_SCHEDULE", { expectedVersion: SCHEDULE_VERSION||1, data: {list: SCHEDULE, refDefaults: REF_DEFAULTS, log: SCHEDULE_LOG, isoma: ISOMA, breaks: BREAKS, rentEnd: RENT_END} });
     SCHEDULE_VERSION = result.data.version;
     return true;
   }catch(e){
@@ -1975,6 +1986,7 @@ function queueInfoFor(m, sched){
   let minutes = ahead*avg;
   const br = isomaOf(sched.day); // ISOMA yang belum terlewati menambah waktu tunggu
   if(br && sched.timeIndex>=br.start+br.len && entries.some(x=>x.s.timeIndex<br.start && !(x.m.status==="FINISHED"||x.m.status==="WO"||x.m.status==="CANCELLED"))) minutes += br.len*30;
+  extraBreaksOf(sched.day).forEach(b=>{ if(sched.timeIndex>=b.start+b.len && entries.some(x=>x.s.timeIndex<b.start && !(x.m.status==="FINISHED"||x.m.status==="WO"||x.m.status==="CANCELLED"))) minutes += b.len*30; });
   return { state:"WAIT", ahead, avg, minutes };
 }
 function clockAfter(minutes){
@@ -4073,7 +4085,8 @@ function buildScheduleListPdf(JsPDF, catCodes){
       const rows = [];
       const iso = isomaOf(d.day);
       for(let idx=0; idx<gridSlotsFor(d.day); idx++){
-        if(isBreakSlot(d.day, idx)){ if(idx===iso.start) rows.push({brk:"ISOMA  -  ISTIRAHAT  "+timeLabel(iso.start,d.day)+" - "+timeLabel(iso.start+iso.len,d.day)}); continue; }
+        const bi = breakInfoAt(d.day, idx);
+        if(bi){ if(idx===bi.start) rows.push({brk:bi.label+"  -  ISTIRAHAT  "+timeLabel(bi.start,d.day)+" - "+timeLabel(bi.start+bi.len,d.day)}); continue; }
         entries.filter(x=>x.timeIndex===idx).sort((a,b)=>a.court<b.court?-1:1).forEach(e=>{
           const m = matchById(code, e.matchId); if(m) rows.push({idx, e, m});
         });
@@ -4141,7 +4154,8 @@ function buildScheduleGridPdf(JsPDF, catCodes){
     // baris yang ditampilkan: dalam rentang jam terpakai, ISOMA ikut, baris yang semua lapangannya tidak disewa & kosong disembunyikan
     const rows = [];
     for(let idx=0; idx<gridSlotsFor(d.day); idx++){
-      if(isBreakSlot(d.day, idx)){ if(idx===iso.start && iso.start>lo && iso.start<hi) rows.push({idx, brk:true}); continue; }
+      const bi = breakInfoAt(d.day, idx);
+      if(bi){ if(idx===bi.start && bi.start>lo && bi.start<hi) rows.push({idx, brk:true, bi}); continue; }
       if(idx<lo || idx>hi) continue;
       if(COURTS.every(c=> isUnrented(d.day, idx, c) && !scheduleOccupant(d.day, idx, c))) continue;
       rows.push({idx});
@@ -4176,7 +4190,7 @@ function buildScheduleGridPdf(JsPDF, catCodes){
       if(r.brk){
         doc.setFillColor(...PDF_GOLD); doc.rect(M+TIMEW, y, W-2*M-TIMEW, rowH, "F");
         doc.setTextColor(...PDF_INK); doc.setFontSize(10);
-        doc.text(pdfTxt("ISOMA  -  ISTIRAHAT  "+timeLabel(iso.start,d.day)+" - "+timeLabel(iso.start+iso.len,d.day)), M+TIMEW+(W-2*M-TIMEW)/2, y+rowH/2+1.3, {align:"center"});
+        doc.text(pdfTxt(r.bi.label+"  -  ISTIRAHAT  "+timeLabel(r.bi.start,d.day)+" - "+timeLabel(r.bi.start+r.bi.len,d.day)), M+TIMEW+(W-2*M-TIMEW)/2, y+rowH/2+1.3, {align:"center"});
       } else {
         COURTS.forEach((court,i)=>{
           const x = M+TIMEW+colW*i;
@@ -4630,20 +4644,45 @@ function dayHasStarted(day, fromIdx){
 async function setIsoma(day, start, len){
   const cur = isomaOf(day);
   if(cur && dayHasStarted(day, 0)){ showToast("Hari ini sudah berjalan, ISOMA tidak bisa diubah lagi."); return false; }
-  const snapshot = JSON.stringify(SCHEDULE), isoSnap = JSON.stringify(ISOMA), logSnap = JSON.stringify(SCHEDULE_LOG);
+  const snapshot = JSON.stringify(SCHEDULE), isoSnap = JSON.stringify(ISOMA), logSnap = JSON.stringify(SCHEDULE_LOG), brkSnap = JSON.stringify(BREAKS);
   const mine = SCHEDULE.filter(x=>x.day===day);
-  if(cur){ mine.forEach(x=>{ if(x.timeIndex>=cur.start+cur.len) x.timeIndex -= cur.len; }); delete ISOMA[day]; }
+  const shiftBreaks = (from, delta)=>{ (BREAKS[day]||[]).forEach(b=>{ if(b.start>=from) b.start += delta; }); };
+  if(cur){ mine.forEach(x=>{ if(x.timeIndex>=cur.start+cur.len) x.timeIndex -= cur.len; }); shiftBreaks(cur.start+cur.len, -cur.len); delete ISOMA[day]; }
   if(len>0){
-    if(dayHasStarted(day, start)){ SCHEDULE = JSON.parse(snapshot); ISOMA = JSON.parse(isoSnap); showToast("Ada pertandingan yang sudah berjalan setelah jam itu."); return false; }
-    if(mine.some(x=>x.timeIndex>=start && x.timeIndex+len>=SLOTS_PER_DAY)){ SCHEDULE = JSON.parse(snapshot); ISOMA = JSON.parse(isoSnap); showToast("Jadwal hari itu terlalu panjang untuk disisipi ISOMA."); return false; }
+    if(dayHasStarted(day, start)){ SCHEDULE = JSON.parse(snapshot); ISOMA = JSON.parse(isoSnap); BREAKS = JSON.parse(brkSnap); showToast("Ada pertandingan yang sudah berjalan setelah jam itu."); return false; }
+    if(mine.some(x=>x.timeIndex>=start && x.timeIndex+len>=SLOTS_PER_DAY)){ SCHEDULE = JSON.parse(snapshot); ISOMA = JSON.parse(isoSnap); BREAKS = JSON.parse(brkSnap); showToast("Jadwal hari itu terlalu panjang untuk disisipi ISOMA."); return false; }
     mine.forEach(x=>{ if(x.timeIndex>=start) x.timeIndex += len; });
+    shiftBreaks(start, len);
     ISOMA[day] = { start, len };
     schedLogPush("ISOMA hari "+day+" dipasang: "+timeLabel(start, day)+"–"+timeLabel(start+len, day)+" (match setelahnya digeser "+(len*30)+" menit)");
   } else {
     schedLogPush("ISOMA hari "+day+" dihapus");
   }
   const ok = await saveSchedule();
-  if(!ok){ SCHEDULE = JSON.parse(snapshot); ISOMA = JSON.parse(isoSnap); SCHEDULE_LOG = JSON.parse(logSnap); return false; }
+  if(!ok){ SCHEDULE = JSON.parse(snapshot); ISOMA = JSON.parse(isoSnap); BREAKS = JSON.parse(brkSnap); SCHEDULE_LOG = JSON.parse(logSnap); return false; }
+  return true;
+}
+/* ===== Break tambahan: tidak menggeser pertandingan, slot harus kosong ===== */
+let breakDraft = { start: 20, len: 1 }; // default 18.00, 30 menit
+async function addBreak(day, start, len){
+  if(len<1 || start<1 || start+len>SLOTS_PER_DAY){ showToast("Jam break tidak valid."); return false; }
+  for(let i=start;i<start+len;i++) if(isBreakSlot(day,i)){ showToast("Bentrok dengan jeda ISOMA/break lain."); return false; }
+  const clash = SCHEDULE.filter(x=>x.day===day && x.timeIndex>=start && x.timeIndex<start+len);
+  if(clash.length){ showToast("Masih ada "+clash.length+" pertandingan di jam itu. Pindahkan dulu."); return false; }
+  const brkSnap = JSON.stringify(BREAKS), logSnap = JSON.stringify(SCHEDULE_LOG);
+  BREAKS[day] = (BREAKS[day]||[]).concat([{ start, len }]);
+  schedLogPush("Break hari "+day+" dipasang: "+timeLabel(start, day)+"\u2013"+timeLabel(start+len, day)+" (pertandingan tidak digeser)");
+  const ok = await saveSchedule();
+  if(!ok){ BREAKS = JSON.parse(brkSnap); SCHEDULE_LOG = JSON.parse(logSnap); return false; }
+  return true;
+}
+async function removeBreak(day, start){
+  const brkSnap = JSON.stringify(BREAKS), logSnap = JSON.stringify(SCHEDULE_LOG);
+  const b = (BREAKS[day]||[]).find(x=>x.start===start); if(!b) return false;
+  BREAKS[day] = BREAKS[day].filter(x=>x!==b); if(!BREAKS[day].length) delete BREAKS[day];
+  schedLogPush("Break hari "+day+" dihapus: "+timeLabel(b.start, day)+"\u2013"+timeLabel(b.start+b.len, day));
+  const ok = await saveSchedule();
+  if(!ok){ BREAKS = JSON.parse(brkSnap); SCHEDULE_LOG = JSON.parse(logSnap); return false; }
   return true;
 }
 async function setRentEnd(day, court, idx){
@@ -4705,6 +4744,37 @@ function renderIsomaCard(){
     })},"Pasang ISOMA"));
     card.appendChild(row);
   }
+  return card;
+}
+function renderBreakCard(){
+  const day = scheduleActiveDay;
+  const card = el("div",{class:"card", style:"margin-bottom:14px;"});
+  card.appendChild(el("div",{style:"font-weight:800;font-size:13.5px;margin-bottom:6px;"},"\u2615 Break tambahan \u2014 "+(TOURNAMENT_DAYS.find(d=>d.day===day)||{}).label));
+  card.appendChild(el("div",{style:"font-size:12.5px;color:var(--ink-dim);margin-bottom:8px;"},"Mengosongkan semua lapangan di jam itu tanpa menggeser pertandingan lain. Slot harus kosong dulu."));
+  extraBreaksOf(day).forEach(b=>{
+    card.appendChild(el("div",{style:"display:flex;gap:8px;align-items:center;margin-bottom:6px;font-size:13px;"},[
+      el("span",{style:"font-weight:800;"}, timeLabel(b.start, day)+" \u2013 "+timeLabel(b.start+b.len, day)+" ("+(b.len*30)+" menit)"),
+      el("button",{class:"btn btn-outline btn-sm", onclick:()=>openConfirm({
+        title:"Hapus break?", body:"Break "+timeLabel(b.start, day)+" \u2013 "+timeLabel(b.start+b.len, day)+" dihapus. Pertandingan tidak berubah.", confirmLabel:"Hapus Break", danger:true,
+        onConfirm: async ()=>{ const ok = await removeBreak(day, b.start); if(ok) showToast("Break dihapus."); render(); }
+      })},"Hapus")
+    ]));
+  });
+  const row = el("div",{style:"display:flex;gap:8px;flex-wrap:wrap;align-items:center;"});
+  const sSel = el("select",{style:inputStyle()+"width:auto;"});
+  for(let i=1;i<=SLOTS_PER_DAY-1;i++){ if(isBreakSlot(day,i)) continue; sSel.appendChild(el("option",{value:i, selected:i===breakDraft.start?"selected":null}, "Mulai "+timeLabel(i, day))); }
+  sSel.addEventListener("change",(e)=>{ breakDraft.start = Number(e.target.value); });
+  const lSel = el("select",{style:inputStyle()+"width:auto;"});
+  [[1,"30 menit"],[2,"60 menit"],[3,"90 menit"]].forEach(([v,l])=> lSel.appendChild(el("option",{value:v, selected:v===breakDraft.len?"selected":null}, l)));
+  lSel.addEventListener("change",(e)=>{ breakDraft.len = Number(e.target.value); });
+  row.appendChild(sSel); row.appendChild(lSel);
+  row.appendChild(el("button",{class:"btn btn-gold btn-sm", onclick:()=>openConfirm({
+    title:"Tambah break?",
+    body:"Break "+timeLabel(breakDraft.start, day)+" \u2013 "+timeLabel(breakDraft.start+breakDraft.len, day)+". Pertandingan lain tidak digeser; slot itu harus kosong.",
+    confirmLabel:"Tambah Break",
+    onConfirm: async ()=>{ const ok = await addBreak(day, breakDraft.start, breakDraft.len); if(ok) showToast("Break ditambahkan."); render(); }
+  })},"+ Tambah Break"));
+  card.appendChild(row);
   return card;
 }
 function allSlotCells(){
@@ -4780,10 +4850,11 @@ function renderSchedByHour(day){
   const total = gridSlotsFor(day);
   let any = false;
   for(let idx=0; idx<total; idx++){
-    if(isBreakSlot(day, idx)){
+    const bInfo = breakInfoAt(day, idx);
+    if(bInfo){
       box.appendChild(el("div",{style:"display:flex;gap:10px;padding:10px 0;border-top:1px solid var(--line);align-items:center;"},[
         el("div",{style:"min-width:52px;font-weight:800;font-size:13px;color:var(--gold-bright);"}, timeLabel(idx,day)),
-        el("div",{style:"font-weight:800;color:var(--gold-bright);"}, "\ud83c\udf71 ISOMA \u2014 istirahat")
+        el("div",{style:"font-weight:800;color:var(--gold-bright);"}, bInfo.icon+" "+bInfo.label+" \u2014 istirahat")
       ]));
       continue;
     }
@@ -4841,6 +4912,7 @@ function viewAdminSchedule(){
   });
   sec.appendChild(compactRow);
   sec.appendChild(renderIsomaCard());
+  sec.appendChild(renderBreakCard());
   sec.appendChild(renderRentCard());
   { const dl = el("div",{class:"card", style:"margin-bottom:14px;"});
     dl.appendChild(el("div",{style:"font-weight:800;font-size:13.5px;margin-bottom:4px;"},"\ud83d\udcc4 Unduh PDF Jadwal"));
@@ -4883,8 +4955,9 @@ function viewAdminSchedule(){
     if(!isBreakSlot(scheduleActiveDay, idx) && COURTS.every(c=> isUnrented(scheduleActiveDay, idx, c) && !scheduleOccupant(scheduleActiveDay, idx, c))) continue;
     const tr = el("tr",{});
     tr.appendChild(el("td",{class:"sched-time"}, timeLabel(idx, scheduleActiveDay)));
-    if(isBreakSlot(scheduleActiveDay, idx)){
-      tr.appendChild(el("td",{colspan:String(COURTS.length), style:"text-align:center;background:rgba(212,165,59,.12);color:var(--gold-bright);font-weight:800;letter-spacing:.5px;"}, "\ud83c\udf71 ISOMA \u2014 istirahat"));
+    const bInfo = breakInfoAt(scheduleActiveDay, idx);
+    if(bInfo){
+      tr.appendChild(el("td",{colspan:String(COURTS.length), style:"text-align:center;background:rgba(212,165,59,.12);color:var(--gold-bright);font-weight:800;letter-spacing:.5px;"}, bInfo.icon+" "+bInfo.label+" \u2014 istirahat"));
       table.appendChild(tr); continue;
     }
     COURTS.forEach(court=>{
@@ -6556,6 +6629,7 @@ async function tvRefresh(){
     META.categories.forEach(cat=>{ const row = (mr.data||[]).find(r=>r.category_code===cat.code); MATCHES[cat.code] = row ? (row.data.list||[]) : []; });
     SCHEDULE = (sr.data && sr.data.data && sr.data.data.list) || [];
     ISOMA = (sr.data && sr.data.data && sr.data.data.isoma) || {};
+    BREAKS = (sr.data && sr.data.data && sr.data.data.breaks) || {};
     RENT_END = (sr.data && sr.data.data && sr.data.data.rentEnd) || {};
     if(Date.now()-tvLastIndex > 60000){ tvLastIndex = Date.now(); await loadIndex(); }
   }catch(e){ console.error(e); /* tampilkan data terakhir; jangan kosongkan layar */ }
