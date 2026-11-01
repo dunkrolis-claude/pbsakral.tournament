@@ -35,6 +35,25 @@ module.exports = async function handler(req, res) {
   }
 
   try {
+    // Penanda perubahan ringan untuk auto-refresh klien: versi jadwal/match/drawing + pendaftar terakhir berubah.
+    if (resource === "sync_state") {
+      const [sch, mat, dra, reg, set] = await Promise.all([
+        supabase.from("schedule").select("version").eq("id", 1).maybeSingle(),
+        supabase.from("matches").select("category_code, version"),
+        supabase.from("drawing").select("category_code, version"),
+        supabase.from("registrations").select("updated_at", { count: "exact" }).order("updated_at", { ascending: false }).limit(1),
+        supabase.from("tournament_settings").select("updated_at").eq("id", 1).maybeSingle(),
+      ]);
+      const sig = JSON.stringify([
+        sch.data && sch.data.version,
+        (mat.data || []).map((r) => r.category_code + ":" + r.version).sort(),
+        (dra.data || []).map((r) => r.category_code + ":" + r.version).sort(),
+        reg.count, reg.data && reg.data[0] && reg.data[0].updated_at,
+        set.data && set.data.updated_at,
+      ]);
+      return sendJson(res, 200, { ok: true, data: { sig } });
+    }
+
     if (resource === "ref_board") {
       if (!isReferee(session) && !isSuper(session)) return sendJson(res, 403, { ok: false, error: "forbidden_scope" });
       const court = isReferee(session) ? refereeCourt(session) : "R";

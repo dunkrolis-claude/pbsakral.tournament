@@ -443,15 +443,19 @@ async function apiRead(resource, params){
   if(!res.ok || !body.ok) throw Object.assign(new Error(body.error||"admin_read_failed"), {status:res.status, body});
   return body.data;
 }
+let MUTATE_INFLIGHT = 0, LAST_MUTATE_AT = 0; // dipakai auto-refresh admin agar tidak menimpa data yang sedang disimpan
 async function apiMutate(action, payload){
-  const res = await fetch("/api/admin-mutate", {
-    method: "POST", credentials: "include",
-    headers: {"Content-Type":"application/json"},
-    body: JSON.stringify({action, payload})
-  });
-  const body = await res.json().catch(()=>({ok:false, error:"bad_response"}));
-  if(!res.ok || !body.ok) throw Object.assign(new Error(body.error||"admin_mutate_failed"), {status:res.status, body});
-  return body;
+  MUTATE_INFLIGHT++; LAST_MUTATE_AT = Date.now();
+  try{
+    const res = await fetch("/api/admin-mutate", {
+      method: "POST", credentials: "include",
+      headers: {"Content-Type":"application/json"},
+      body: JSON.stringify({action, payload})
+    });
+    const body = await res.json().catch(()=>({ok:false, error:"bad_response"}));
+    if(!res.ok || !body.ok) throw Object.assign(new Error(body.error||"admin_mutate_failed"), {status:res.status, body});
+    return body;
+  } finally { MUTATE_INFLIGHT--; LAST_MUTATE_AT = Date.now(); }
 }
 
 /* ---- snake_case (DB) <-> camelCase (existing JS object) mapping ---- */
@@ -7832,7 +7836,7 @@ function playerRouteFromHash(hash){
         }, 1500);
       }).catch(()=>{});
     }
-    setInterval(()=>{ if(!document.hidden) refreshPublic(); }, 60000);
+    setInterval(()=>{ if(!document.hidden) refreshPublic(); }, 15000);
     window.addEventListener("online", refreshPublic);
     document.addEventListener("visibilitychange", ()=>{ if(!document.hidden) refreshPublic(); });
     window.addEventListener("hashchange", ()=>{
@@ -7841,6 +7845,40 @@ function playerRouteFromHash(hash){
     });
   }
 })();
+/* ============ AUTO-REFRESH ADMIN: perangkat admin lain ikut ter-update begitu ada inputan baru ============ */
+let ADMIN_SYNC_SIG = null, adminSyncBusy = false;
+function adminUiBusy(){
+  const a = document.activeElement;
+  if(a && (a.tagName==="INPUT" || a.tagName==="TEXTAREA" || a.tagName==="SELECT")) return true;
+  if(document.querySelector(".modal-overlay")) return true;
+  return false;
+}
+async function adminSync(){
+  if(!adminSession || refereeScope || refDemo || !ready || adminSyncBusy || document.hidden) return;
+  if(!route || !String(route.name).startsWith("admin") || route.name==="admin-login") return;
+  if(route.name==="admin-drawing" || route.name==="admin-settings") return; // halaman dengan draf lokal yang belum disimpan
+  adminSyncBusy = true;
+  try{
+    const { sig } = await apiRead("sync_state");
+    if(ADMIN_SYNC_SIG===null){ ADMIN_SYNC_SIG = sig; return; }
+    if(sig === ADMIN_SYNC_SIG) return;
+    if(MUTATE_INFLIGHT>0 || Date.now()-LAST_MUTATE_AT < 2500 || adminUiBusy()) return; // coba lagi di putaran berikut
+    const before = JSON.stringify([INDEX, MATCHES, SCHEDULE, DRAWING, ISOMA, BREAKS, RENT_END, META.settings]);
+    const oldUpd = {}; INDEX.forEach(r=>{ oldUpd[r.id] = r.updatedAt; });
+    await loadMeta();
+    await loadIndex();
+    await loadPhase2();
+    // data lengkap pendaftar yang berubah di perangkat lain dimuat ulang saat dibutuhkan
+    INDEX.forEach(r=>{ if(oldUpd[r.id]!==r.updatedAt) delete REG_CACHE[r.id]; });
+    ADMIN_SYNC_SIG = sig;
+    const after = JSON.stringify([INDEX, MATCHES, SCHEDULE, DRAWING, ISOMA, BREAKS, RENT_END, META.settings]);
+    if(after!==before && !adminUiBusy()) render();
+  }catch(e){ /* jaringan putus: coba lagi putaran berikut */ }
+  finally{ adminSyncBusy = false; }
+}
+setInterval(adminSync, 8000);
+document.addEventListener("visibilitychange", ()=>{ if(!document.hidden) adminSync(); });
+window.addEventListener("online", adminSync);
 function PLAYER_SW_OK(){
   try{ return "serviceWorker" in navigator && (location.protocol==="https:" || location.hostname==="localhost"); }catch(e){ return false; }
 }
