@@ -1134,6 +1134,15 @@ function schedResultInfo(m){
   if(m.status==="CALLING") return { live:true, text:"\ud83d\udce3 Dipanggil" };
   return null;
 }
+/* "A vs B" dengan nama pemenang ditebalkan bila pertandingan sudah selesai */
+function schedSidesEl(cat, m){
+  const won = (m.status==="FINISHED"||m.status==="WO") && m.winnerParticipantId ? m.winnerParticipantId : null;
+  const part = (side)=>{
+    const isWin = won && side.type==="participant" && side.participantId===won;
+    return el("span",{style: isWin ? "font-weight:900;color:var(--ink);" : ""}, (isWin?"\ud83c\udfc6 ":"")+matchSideLabel(cat, side));
+  };
+  return [part(m.sideA), " vs ", part(m.sideB)];
+}
 function schedResultBadge(r){
   return el("div",{class: r.done ? "sc-result done" : "sc-result live"}, r.done ? "\u2713 SELESAI \u00b7 "+r.text : r.text);
 }
@@ -2481,7 +2490,7 @@ function renderPublicJadwal(){
         const res = schedResultInfo(m);
         tr.appendChild(el("td",{},[el("div",{class:"sched-cell filled"+(res&&res.done?" done":""), style:"cursor:default;height:auto;min-height:44px;"},[
           el("div",{style:`color:var(${cat.accentVar});font-weight:800;`}, cat.name+" "+ROUND_LABELS[m.round]+"#"+m.matchNo),
-          el("div",{style:"font-weight:600;margin-top:2px;"}, label),
+          el("div",{style:"font-weight:600;margin-top:2px;"}, m ? schedSidesEl(occ.category, m) : label),
           res ? schedResultBadge(res) : null
         ])]));
       } else {
@@ -4887,7 +4896,7 @@ function renderSchedByHour(day){
       items.push(el("div",{style:"display:flex;gap:8px;padding:3px 0;font-size:12.5px;align-items:baseline;"},[
         el("span",{style:"min-width:38px;font-weight:800;"}, "Lap "+court),
         el("span",{style:"min-width:92px;font-weight:700;"+schedCatStyle(occ.category)+"border-radius:6px;padding:1px 6px;"}, (cat?cat.name:occ.category)+" "+m.round+"#"+m.matchNo),
-        el("span",{style:"color:var(--ink-dim);"}, names),
+        el("span",{style:"color:var(--ink-dim);"}, schedSidesEl(occ.category, m)),
         (()=>{ const res = schedResultInfo(m); return res ? el("span",{class:"sc-result "+(res.done?"done":"live"), style:"margin-left:auto;white-space:nowrap;"}, res.done ? "\u2713 "+res.text : res.text) : null; })()
       ]));
     });
@@ -5003,7 +5012,7 @@ function viewAdminSchedule(){
         const catShort = occ.category.slice(0,3);
         const ref = effectiveReferee(m);
         const kids = [ el("div",{}, catShort+" "+(m? m.round+"#"+m.matchNo : "")) ];
-        if(m) kids.push(el("div",{class:"sc-sub"}, matchSideLabel(occ.category,m.sideA)+" vs "+matchSideLabel(occ.category,m.sideB)));
+        if(m) kids.push(el("div",{class:"sc-sub"}, schedSidesEl(occ.category, m)));
         if(ref) kids.push(el("div",{class:"sc-ref"}, "\ud83d\udc64 "+ref));
         const res = schedResultInfo(m);
         if(res) kids.push(schedResultBadge(res));
