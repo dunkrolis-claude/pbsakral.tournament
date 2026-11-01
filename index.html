@@ -328,6 +328,9 @@
   .sched-legend i{display:inline-block;width:11px;height:11px;border-radius:3px;margin-right:5px;vertical-align:-1px;}
   .sched-cell .sc-sub{font-weight:600;font-size:9px;color:var(--ink-faint);margin-top:1px;white-space:normal;}
   .sched-cell.done{opacity:.62;border-left:3px solid #3fae5c;}
+  .sched-cell.live{background:rgba(255,176,32,.28)!important;outline:3px solid #ffb020;outline-offset:-3px;animation:livePulse 1.6s ease-in-out infinite;}
+  .sched-cell.live.calling{background:rgba(70,160,255,.25)!important;outline-color:#46a0ff;}
+  @keyframes livePulse{0%,100%{box-shadow:inset 0 0 0 0 rgba(255,176,32,.0);}50%{box-shadow:inset 0 0 14px 2px rgba(255,176,32,.55);}}
   .sc-result{font-weight:800;font-size:9.5px;margin-top:2px;}
   .sc-result.done{color:#3fae5c;}
   .sc-result.live{color:#ffb020;}
@@ -2488,7 +2491,7 @@ function renderPublicJadwal(){
         const cat = catByCode(occ.category);
         const label = m ? (matchSideLabel(occ.category,m.sideA)+" vs "+matchSideLabel(occ.category,m.sideB)) : "";
         const res = schedResultInfo(m);
-        tr.appendChild(el("td",{},[el("div",{class:"sched-cell filled"+(res&&res.done?" done":""), style:"cursor:default;height:auto;min-height:44px;"},[
+        tr.appendChild(el("td",{},[el("div",{class:"sched-cell filled"+(res&&res.done?" done":"")+(res&&res.live?" live"+(m.status==="CALLING"?" calling":""):""), style:"cursor:default;height:auto;min-height:44px;"},[
           el("div",{style:`color:var(${cat.accentVar});font-weight:800;`}, cat.name+" "+ROUND_LABELS[m.round]+"#"+m.matchNo),
           el("div",{style:"font-weight:600;margin-top:2px;"}, m ? schedSidesEl(occ.category, m) : label),
           res ? schedResultBadge(res) : null
@@ -4893,7 +4896,8 @@ function renderSchedByHour(day){
       if(!m) return;
       const cat = catByCode(occ.category);
       const names = matchSideLabel(occ.category,m.sideA)+" vs "+matchSideLabel(occ.category,m.sideB);
-      items.push(el("div",{style:"display:flex;gap:8px;padding:3px 0;font-size:12.5px;align-items:baseline;"},[
+      const liveSt = (m.status==="ON_COURT"||m.status==="CALLING") ? (m.status==="CALLING"?"background:rgba(70,160,255,.18);":"background:rgba(255,176,32,.22);")+"border-left:3px solid "+(m.status==="CALLING"?"#46a0ff":"#ffb020")+";padding-left:6px;border-radius:4px;" : "";
+      items.push(el("div",{style:"display:flex;gap:8px;padding:3px 0;font-size:12.5px;align-items:baseline;"+liveSt},[
         el("span",{style:"min-width:38px;font-weight:800;"}, "Lap "+court),
         el("span",{style:"min-width:92px;font-weight:700;"+schedCatStyle(occ.category)+"border-radius:6px;padding:1px 6px;"}, (cat?cat.name:occ.category)+" "+m.round+"#"+m.matchNo),
         el("span",{style:"color:var(--ink-dim);"}, schedSidesEl(occ.category, m)),
@@ -5016,7 +5020,7 @@ function viewAdminSchedule(){
         if(ref) kids.push(el("div",{class:"sc-ref"}, "\ud83d\udc64 "+ref));
         const res = schedResultInfo(m);
         if(res) kids.push(schedResultBadge(res));
-        cell = el("td",{},[el("div",{class:"sched-cell filled"+(res&&res.done?" done":"")+mvCls, style:"height:auto;min-height:44px;"+schedCatStyle(occ.category), onclick: mvClick || (()=>{ schedMove={category:occ.category, matchId:occ.matchId}; render(); })}, kids)]);
+        cell = el("td",{},[el("div",{class:"sched-cell filled"+(res&&res.done?" done":"")+(res&&res.live?" live"+(m.status==="CALLING"?" calling":""):"")+mvCls, style:"height:auto;min-height:44px;"+schedCatStyle(occ.category), onclick: mvClick || (()=>{ schedMove={category:occ.category, matchId:occ.matchId}; render(); })}, kids)]);
       } else if(plan && !(planMatchFor(plan)||{}).bye && !(planMatchFor(plan) && scheduleFor(planMatchFor(plan).id))){
         const m = planMatchFor(plan);
         let note = "menunggu drawing";
