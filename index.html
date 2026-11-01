@@ -4042,7 +4042,7 @@ function buildBracketPdf(JsPDF, catCode){
   return doc;
 }
 
-function buildSchedulePdf(JsPDF, catCodes){
+function buildScheduleListPdf(JsPDF, catCodes){
   const doc = new JsPDF({orientation:"landscape", unit:"mm", format:"a4"});
   const W = doc.internal.pageSize.getWidth(), H = doc.internal.pageSize.getHeight();
   const M = 8, rowH = 7.6;
@@ -4114,13 +4114,108 @@ function buildSchedulePdf(JsPDF, catCodes){
   return doc;
 }
 
+
+function pdfSideShort(catCode, side){
+  if(side && side.type!=="participant"){
+    const ref = matchById(catCode, side.matchId);
+    return ref ? "Pem. "+ref.round+" #"+ref.matchNo : "TBD";
+  }
+  return matchSideLabel(catCode, side, true);
+}
+/* PDF jadwal bentuk GRID (jam x lapangan), sama seperti tampilan Jadwal di sistem. Satu halaman per hari. */
+function buildScheduleGridPdf(JsPDF, catCodes){
+  const doc = new JsPDF({orientation:"landscape", unit:"mm", format:"a3"});
+  const W = doc.internal.pageSize.getWidth(), H = doc.internal.pageSize.getHeight();
+  const M = 8, TIMEW = 22, HEADH = 9;
+  const single = catCodes.length===1 ? catByCode(catCodes[0]) : null;
+  let first = true, any = false;
+  TOURNAMENT_DAYS.forEach(d=>{
+    const entries = SCHEDULE.filter(x=>x.day===d.day && catCodes.includes(x.category) && matchById(x.category, x.matchId));
+    if(!entries.length) return;
+    any = true;
+    if(!first) doc.addPage(); first = false;
+    const used = entries.map(e=>e.timeIndex);
+    const lo = Math.min(...used), hi = Math.max(...used);
+    const iso = isomaOf(d.day);
+    // baris yang ditampilkan: dalam rentang jam terpakai, ISOMA ikut, baris yang semua lapangannya tidak disewa & kosong disembunyikan
+    const rows = [];
+    for(let idx=0; idx<gridSlotsFor(d.day); idx++){
+      if(isBreakSlot(d.day, idx)){ if(idx===iso.start && iso.start>lo && iso.start<hi) rows.push({idx, brk:true}); continue; }
+      if(idx<lo || idx>hi) continue;
+      if(COURTS.every(c=> isUnrented(d.day, idx, c) && !scheduleOccupant(d.day, idx, c))) continue;
+      rows.push({idx});
+    }
+    const headCat = single || { code:"PRIME", name:d.label.split(",")[0].toUpperCase(), level:"SEMUA LEVEL" };
+    pdfHeaderBand(doc, W, "JADWAL PERTANDINGAN  -  "+d.label.toUpperCase(), (single ? single.name+"  |  " : "")+"Jam adalah rencana (perkiraan, bisa lebih cepat)  |  Datang 1 jam sebelum jadwal  |  Dewi Sport Hall Karawang", single ? single : { code:"PRIME", name:d.label.split(",")[0], level:"" });
+    // legenda kategori
+    let lx = M; const ly = 33.5;
+    doc.setFont("helvetica","bold"); doc.setFontSize(8);
+    catCodes.forEach(code=>{
+      const c = catByCode(code), rgb = pdfCatRgb(code);
+      doc.setFillColor(...rgb); doc.roundedRect(lx, ly-3, 5, 3.6, 0.8, 0.8, "F");
+      doc.setTextColor(40); const t = pdfTxt(c.name+" ("+c.level+")"); doc.text(t, lx+7, ly);
+      lx += 7 + doc.getTextWidth(t) + 8;
+    });
+    const top = 38;
+    const availH = H - 7 - 4 - top - HEADH;
+    const rowH = Math.max(6.5, Math.min(14, availH / Math.max(rows.length,1)));
+    const colW = (W - 2*M - TIMEW) / COURTS.length;
+    // header lapangan
+    doc.setFillColor(...PDF_INK); doc.rect(M, top, W-2*M, HEADH, "F");
+    doc.setFont("helvetica","bold"); doc.setFontSize(10); doc.setTextColor(...PDF_GOLD);
+    doc.text("JAM", M+TIMEW/2, top+HEADH*0.65, {align:"center"});
+    COURTS.forEach((c,i)=> doc.text("LAPANGAN "+c, M+TIMEW+colW*i+colW/2, top+HEADH*0.65, {align:"center"}));
+    let y = top + HEADH;
+    const fsName = rowH>=11 ? 7.6 : (rowH>=9 ? 6.8 : 6);
+    rows.forEach(r=>{
+      // kolom jam
+      doc.setFillColor(245,245,245); doc.rect(M, y, TIMEW, rowH, "F");
+      doc.setFont("helvetica","bold"); doc.setFontSize(9.5); doc.setTextColor(30);
+      doc.text(timeLabel(r.idx, d.day), M+TIMEW/2, y+rowH/2+1.3, {align:"center"});
+      if(r.brk){
+        doc.setFillColor(...PDF_GOLD); doc.rect(M+TIMEW, y, W-2*M-TIMEW, rowH, "F");
+        doc.setTextColor(...PDF_INK); doc.setFontSize(10);
+        doc.text(pdfTxt("ISOMA  -  ISTIRAHAT  "+timeLabel(iso.start,d.day)+" - "+timeLabel(iso.start+iso.len,d.day)), M+TIMEW+(W-2*M-TIMEW)/2, y+rowH/2+1.3, {align:"center"});
+      } else {
+        COURTS.forEach((court,i)=>{
+          const x = M+TIMEW+colW*i;
+          const occ = scheduleOccupant(d.day, r.idx, court);
+          const mm = occ && catCodes.includes(occ.category) ? matchById(occ.category, occ.matchId) : null;
+          if(!occ && isUnrented(d.day, r.idx, court)){ doc.setFillColor(20,20,20); doc.rect(x, y, colW, rowH, "F"); return; }
+          if(!mm){ return; }
+          const rgb = pdfCatRgb(occ.category);
+          doc.setFillColor(...pdfTint(mm.round==="F" ? PDF_GOLD : rgb, mm.round==="F" ? 0.45 : 0.22)); doc.rect(x+0.4, y+0.4, colW-0.8, rowH-0.8, "F");
+          doc.setFillColor(...rgb); doc.rect(x+0.4, y+0.4, 1.6, rowH-0.8, "F");
+          doc.setTextColor(25); doc.setFont("helvetica","bold"); doc.setFontSize(fsName+1.6);
+          const head = (single ? "" : occ.category.slice(0,3)+"  ")+mm.round+" #"+mm.matchNo;
+          doc.text(pdfTxt(head), x+3.6, y+ (rowH>=9 ? 3.7 : 3.2));
+          doc.setFont("helvetica","normal"); doc.setFontSize(fsName); doc.setTextColor(55);
+          const a = pdfFit(doc, pdfSideShort(occ.category, mm.sideA), colW-6), b = pdfFit(doc, pdfSideShort(occ.category, mm.sideB), colW-6);
+          if(rowH>=9){ doc.text(a, x+3.6, y+ (rowH>=11 ? 7.2 : 6.6)); doc.text(b, x+3.6, y+ (rowH>=11 ? 10.4 : 9.2)); }
+          else { doc.text(pdfFit(doc, pdfSideShort(occ.category, mm.sideA)+"  vs  "+pdfSideShort(occ.category, mm.sideB), colW-6), x+3.6, y+6); }
+        });
+      }
+      doc.setDrawColor(215); doc.setLineWidth(0.15); doc.line(M, y+rowH, W-M, y+rowH);
+      y += rowH;
+    });
+    // garis kolom
+    doc.setDrawColor(200); doc.setLineWidth(0.15);
+    for(let i=0;i<=COURTS.length;i++){ const x = M+TIMEW+colW*i; doc.line(x, top+HEADH, x, y); }
+    doc.line(M, top+HEADH, M, y); 
+  });
+  if(!any){ pdfHeaderBand(doc, W, "JADWAL PERTANDINGAN", "Belum ada jadwal untuk level ini", catByCode(catCodes[0])); }
+  pdfFooters(doc, W, H, null);
+  return doc;
+}
+
 async function downloadPdf(kind, codes){
   showToast("Menyiapkan PDF...");
   try{
     const JsPDF = await loadJsPdf();
     let doc, name;
     if(kind==="bracket"){ doc = buildBracketPdf(JsPDF, codes[0]); name = pdfFileName("Bracket", catByCode(codes[0]).name); }
-    else { doc = buildSchedulePdf(JsPDF, codes); name = pdfFileName("Jadwal", codes.length===1 ? catByCode(codes[0]).name : "Semua-Level"); }
+    else if(kind==="schedule-list"){ doc = buildScheduleListPdf(JsPDF, codes); name = pdfFileName("Jadwal-Daftar", codes.length===1 ? catByCode(codes[0]).name : "Semua-Level"); }
+    else { doc = buildScheduleGridPdf(JsPDF, codes); name = pdfFileName("Jadwal", codes.length===1 ? catByCode(codes[0]).name : "Semua-Level"); }
     doc.save(name);
     showToast("PDF diunduh: "+name);
   }catch(e){ console.error(e); showToast("Gagal membuat PDF. Cek koneksi lalu coba lagi."); }
@@ -4132,6 +4227,7 @@ function pdfButtons(kind, label){
   } else {
     META.categories.forEach(c=> row.appendChild(el("button",{class:"btn btn-outline btn-sm", onclick:()=>downloadPdf("schedule",[c.code])}, "⬇ "+c.name)));
     row.appendChild(el("button",{class:"btn btn-outline btn-sm", onclick:()=>downloadPdf("schedule",META.categories.map(c=>c.code))}, "⬇ Semua level"));
+    row.appendChild(el("button",{class:"btn btn-outline btn-sm", style:"opacity:.8;", onclick:()=>downloadPdf("schedule-list",META.categories.map(c=>c.code))}, "⬇ Versi daftar + kolom skor"));
   }
   return row;
 }
@@ -4686,7 +4782,7 @@ function viewAdminSchedule(){
   sec.appendChild(renderRentCard());
   { const dl = el("div",{class:"card", style:"margin-bottom:14px;"});
     dl.appendChild(el("div",{style:"font-weight:800;font-size:13.5px;margin-bottom:4px;"},"\ud83d\udcc4 Unduh PDF Jadwal"));
-    dl.appendChild(el("div",{style:"color:var(--ink-dim);font-size:11.5px;margin-bottom:10px;"},"Satu file per level (urut jam, ada kolom skor kosong untuk dicatat manual), atau semua level sekaligus."));
+    dl.appendChild(el("div",{style:"color:var(--ink-dim);font-size:11.5px;margin-bottom:10px;"},"Format grid jam x lapangan seperti tampilan di sistem (kertas A3 landscape, satu halaman per hari). Pilih satu level atau semua level; versi daftar punya kolom skor kosong untuk dicatat manual."));
     dl.appendChild(pdfButtons("schedule")); sec.appendChild(dl); }
 
   const legend = el("div",{class:"sched-legend"});
